@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Control</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <h1>Home Control</h1>
+      <span id="conn" class="chip">Connecting…</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="devices" aria-selected="true">Devices</button>
+      <button role="tab" data-tab="groups">Groups</button>
+      <button role="tab" data-tab="effects">Effects</button>
+      <button role="tab" data-tab="timers">Timers</button>
+      <button role="tab" data-tab="settings">Settings</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section id="tab-devices" class="tab">
+    <div class="section-head">
+      <h2>Devices</h2>
+      <button id="refresh" class="ghost">Refresh list</button>
+    </div>
+    <p class="hint">State shows what this app last sent. Govee Desktop can't report a light's real state.</p>
+    <div id="device-list" class="cards"></div>
+  </section>
+
+  <section id="tab-groups" class="tab" hidden>
+    <div class="section-head"><h2>Groups</h2></div>
+    <p class="hint">Control several lights as one. <b>Linked</b> runs an effect across all of them as one long strip. <b>Side by side</b> runs the same effect on each.</p>
+    <div id="group-list" class="cards"></div>
+    <form id="group-form" class="panel">
+      <h3>New group</h3>
+      <label>Name <input id="group-name" required maxlength="60" placeholder="Outside"></label>
+      <fieldset><legend>Lights, in order</legend><div id="group-members" class="checks"></div></fieldset>
+      <label>Effects run
+        <select id="group-mode">
+          <option value="span">Linked, across all lights in order</option>
+          <option value="mirror">Side by side, same on each light</option>
+        </select>
+      </label>
+      <button type="submit">Save group</button>
+    </form>
+  </section>
+
+  <section id="tab-effects" class="tab" hidden>
+    <div class="section-head"><h2>Effects</h2></div>
+    <div class="split">
+      <form id="effect-form" class="panel">
+        <h3>Build an effect</h3>
+        <label>Pattern <select id="fx-pattern"></select></label>
+        <div id="fx-params" class="params"></div>
+        <div class="preview-wrap">
+          <div class="preview-head">
+            <span class="label">Preview</span>
+            <label class="inline">Segments <input id="fx-segs" type="number" min="1" max="200" value="20"></label>
+          </div>
+          <div id="fx-preview" class="strip big"></div>
+        </div>
+        <div class="row">
+          <label class="grow">Run on <select id="fx-target"></select></label>
+          <button type="button" id="fx-run">Start</button>
+          <button type="button" id="fx-stop" class="ghost">Stop</button>
+        </div>
+        <div class="row">
+          <label class="grow">Save as <input id="fx-name" maxlength="60" placeholder="Porch candy cane"></label>
+          <button type="submit">Save effect</button>
+        </div>
+      </form>
+      <div class="panel">
+        <h3>Saved effects</h3>
+        <ul id="preset-list" class="list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-timers" class="tab" hidden>
+    <div class="section-head"><h2>Timers</h2></div>
+    <p class="hint">Timers run only while this app is running on the PC.</p>
+    <ul id="timer-list" class="list timers"></ul>
+    <form id="timer-form" class="panel">
+      <h3>New timer</h3>
+      <label>Name <input id="t-name" required maxlength="60" placeholder="Porch on at sunset"></label>
+      <div class="row">
+        <label class="grow">Lights <select id="t-target"></select></label>
+        <label class="grow">Do
+          <select id="t-action">
+            <option value="on">Turn on</option>
+            <option value="off">Turn off</option>
+            <option value="brightness">Set brightness</option>
+            <option value="color">Set color</option>
+            <option value="preset">Start a saved effect</option>
+            <option value="stop">Stop effect</option>
+          </select>
+        </label>
+        <label id="t-value-wrap" hidden>Brightness <input id="t-value" type="number" min="1" max="100" value="60"></label>
+        <label id="t-color-wrap" hidden>Color <input id="t-color" type="color" value="#ffb46b"></label>
+        <label id="t-preset-wrap" hidden>Effect <select id="t-preset"></select></label>
+      </div>
+      <div class="row">
+        <label>When
+          <select id="t-when">
+            <option value="time">At a time</option>
+            <option value="sunset">At sunset</option>
+            <option value="sunrise">At sunrise</option>
+          </select>
+        </label>
+        <label id="t-time-wrap">Time <input id="t-time" type="time" value="18:00"></label>
+        <label id="t-offset-wrap" hidden>Minutes before (−) or after (+) <input id="t-offset" type="number" value="0" step="5"></label>
+      </div>
+      <fieldset><legend>Days</legend><div id="t-days" class="checks days"></div></fieldset>
+      <button type="submit">Save timer</button>
+    </form>
+    <div class="panel">
+      <h3>Recent timer runs</h3>
+      <ul id="timer-log" class="list small"></ul>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="tab" hidden>
+    <div class="section-head"><h2>Settings</h2></div>
+    <form id="settings-form" class="panel">
+      <h3>Location, for sunrise and sunset timers</h3>
+      <div class="row">
+        <label class="grow">Latitude <input id="s-lat" inputmode="decimal" placeholder="40.71"></label>
+        <label class="grow">Longitude <input id="s-lon" inputmode="decimal" placeholder="-74.01"></label>
+        <button type="button" id="s-locate" class="ghost">Use this PC's location</button>
+      </div>
+      <p class="hint">Saved only on this PC, in the data folder.</p>
+      <h3>Effects</h3>
+      <label>Updates per second sent to each light
+        <input id="s-fps" type="number" min="0.5" max="20" step="0.5" value="4">
+      </label>
+      <p class="hint">Higher is smoother. If lights lag or skip, lower it.</p>
+      <button type="submit">Save settings</button>
+    </form>
+    <div class="panel">
+      <h3>Connection</h3>
+      <p id="s-status">…</p>
+      <button id="reconnect" class="ghost">Reconnect to Govee Desktop</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

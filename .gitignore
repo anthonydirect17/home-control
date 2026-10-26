@@ -1,0 +1,14 @@
+# Personal data: device names, network details, location. Never commit.
+data/
+*.tmp
+.env
+.env.*
+govee_devices.*
+govee_desktop_devices.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
