@@ -91,6 +91,14 @@ class LanBackend(Backend):
 
     def close(self):
         self._stop.set()
+        for sock in (self._recv, self._send_sock):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        self._recv = self._send_sock = None
+        self.listening = False
 
     def status_note(self):
         return self._note

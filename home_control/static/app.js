@@ -16,6 +16,10 @@ async function api(method, path, body) {
   });
   let data = null;
   try { data = await res.json(); } catch (_) { /* empty body */ }
+  if (res.status === 401 && data && data.pin_required) {
+    showPinScreen();
+    throw new Error("Enter your PIN to continue.");
+  }
   if (!res.ok) {
     const detail = data && data.detail;
     throw new Error(typeof detail === "string" ? detail : `Request failed (${res.status})`);
@@ -596,7 +600,54 @@ document.getElementById("refresh").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+// ---------- PIN ----------
+
+function showPinScreen(message) {
+  document.getElementById("pin-screen").hidden = false;
+  if (message) document.getElementById("pin-message").textContent = message;
+  document.getElementById("pin-input").focus();
+}
+
+document.getElementById("pin-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const input = document.getElementById("pin-input");
+  const err = document.getElementById("pin-error");
+  err.textContent = "";
+  try {
+    await api("POST", "/api/auth/login", { pin: input.value });
+    window.location.reload();
+  } catch (ex) {
+    err.textContent = ex.message;
+    input.value = "";
+    input.focus();
+  }
+});
+
+document.getElementById("sign-out").addEventListener("click", async () => {
+  await api("POST", "/api/auth/logout");
+  window.location.reload();
+});
+
+async function checkPin() {
+  const a = await api("GET", "/api/auth/status");
+  if (!a.required || a.signed_in) return true;
+  if (!a.pin_set) {
+    showPinScreen("No PIN has been set yet. On the server, run: python -m home_control --set-pin");
+    document.getElementById("pin-input").disabled = true;
+    document.getElementById("pin-submit").disabled = true;
+  } else {
+    showPinScreen();
+  }
+  return false;
+}
+
 async function start() {
+  try {
+    if (!(await checkPin())) return;
+  } catch (e) {
+    toast(`Can't reach the app: ${e.message}`, true);
+    return;
+  }
   try {
     [S.patterns, S.groups, S.presets, S.settings] = await Promise.all([
       api("GET", "/api/patterns"), api("GET", "/api/groups"), api("GET", "/api/presets"), api("GET", "/api/settings")]);

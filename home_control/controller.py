@@ -83,6 +83,14 @@ class Controller:
         self.state = {}
         self._lock = threading.RLock()
         self._effects = {}  # device id -> Effect
+        self.last_activity = None  # epoch seconds of the latest command, frame or state report
+
+    def touch(self):
+        self.last_activity = time.time()
+
+    def effects_running(self):
+        with self._lock:
+            return len({id(e) for e in self._effects.values()})
 
     @property
     def devices(self):
@@ -155,6 +163,7 @@ class Controller:
         for d in members:
             try:
                 fn(d)
+                self.touch()
                 self.state[d.id]["error"] = None
             except BackendError as e:
                 self.state[d.id]["error"] = str(e)
@@ -247,6 +256,7 @@ class Controller:
             return False
         try:
             self.hub.send_frame(d, hexes, patterns.hex_to_rgb)
+            self.touch()
             self.state[dev_id].update(frame=list(hexes), error=None)
             return True
         except BackendError as e:
@@ -270,6 +280,7 @@ class Controller:
             except BackendError:
                 continue
             if st:
+                self.touch()
                 s = self.state.setdefault(d.id, _blank_state())
                 s.update(st, reported=True)
                 if "color" in st:
