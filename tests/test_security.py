@@ -320,3 +320,12 @@ def test_log_rotation_keeps_three(tmp_path):
         sys.stdout, sys.stderr = stdout, stderr
     names = sorted(p.name for p in tmp_path.iterdir())
     assert names == ["hc.log", "hc.log.1", "hc.log.2", "hc.log.3"]
+
+
+def test_default_port_never_collides_with_the_trading_desk(monkeypatch, tmp_path):
+    from home_control import __main__ as cli
+    seen = {}
+    monkeypatch.setattr(cli, "serve", lambda args, store: seen.setdefault("port", args.port) and 0)
+    monkeypatch.setattr(sys, "argv", ["home_control", "--data", str(tmp_path)])
+    cli.main()
+    assert seen["port"] == 8780

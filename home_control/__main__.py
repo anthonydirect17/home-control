@@ -130,7 +130,7 @@ def main():
     parser = argparse.ArgumentParser(prog="home_control", description="Control center for Govee lights.")
     parser.add_argument("--demo", action="store_true", help="use pretend lights")
     parser.add_argument("--host", default="127.0.0.1", help="address to serve on (default: this PC only)")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8780)  # 8765 is reserved for the trading desk; never use it
     parser.add_argument("--data", default=os.path.join(ROOT, "data"), help="folder for saved settings")
     parser.add_argument("--no-browser", action="store_true", help="don't open the page automatically")
     parser.add_argument("--log-file", help="write all output here (rotated at 1 MB, 3 kept)")

@@ -34,7 +34,7 @@ Try it with pretend lights first:
 python -m home_control --demo
 ```
 
-Your browser opens at http://127.0.0.1:8765/.
+Your browser opens at http://127.0.0.1:8780/.
 
 ### Your keys
 
