@@ -1,17 +1,25 @@
-"""Find the Govee Desktop API GUID without ever storing it in this folder.
+"""Find credentials without ever storing them in this folder.
 
-Lookup order:
-  1. GOVEE_DESKTOP_GUID environment variable
-  2. Windows Credential Manager, entry "home-control/govee-desktop-guid"
-     (python -m home_control --set-guid saves it there)
-  3. Windows Credential Manager, the entry named in settings
-     ("guid_credential"), or the only generic entry with "govee" in its name
+Each secret is looked up, in order:
+  1. its environment variable
+  2. on Windows: Credential Manager, under the app's own entry name
+     on Linux/macOS: ~/.config/home-control/secrets.json (readable by you only)
+     (python -m home_control --set-guid / --set-govee-key saves it there)
+  3. for the Govee Desktop GUID only: the Credential Manager entry named in
+     settings ("guid_credential"), or the only other entry with "govee" in its name
 """
 
+import json
 import os
 import sys
 
-APP_TARGET = "home-control/govee-desktop-guid"
+SECRETS = {
+    "govee-desktop-guid": {"env": "GOVEE_DESKTOP_GUID", "target": "home-control/govee-desktop-guid",
+                           "label": "Govee Desktop API GUID (Settings -> API in Govee Desktop)"},
+    "govee-api-key": {"env": "GOVEE_API_KEY", "target": "home-control/govee-api-key",
+                      "label": "Govee API key (emailed by Govee)"},
+}
+APP_TARGET = SECRETS["govee-desktop-guid"]["target"]
 
 if sys.platform == "win32":
     import ctypes
@@ -104,31 +112,77 @@ def govee_credential_names():
         _advapi.CredFree(creds)
 
 
-def get_guid(settings: dict):
-    """Return (guid, where_it_came_from) or (None, reason)."""
-    env = os.environ.get("GOVEE_DESKTOP_GUID", "").strip()
+def _secrets_file():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "home-control", "secrets.json")
+
+
+def _read_file_secret(target):
+    try:
+        with open(_secrets_file(), encoding="utf-8") as f:
+            return (json.load(f) or {}).get(target)
+    except (OSError, ValueError):
+        return None
+
+
+def save_secret_value(name: str, value: str):
+    """Store a secret the right way for this OS; returns where it went."""
+    target = SECRETS[name]["target"]
+    if sys.platform == "win32":
+        write_credential(target, value)
+        return f"Windows Credential Manager as '{target}'"
+    path = _secrets_file()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except (OSError, ValueError):
+        pass
+    data[target] = value
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
+    return path
+
+
+def get_secret(name: str, settings: dict = None):
+    """Return (value, where_it_came_from) or (None, reason)."""
+    spec = SECRETS[name]
+    env = os.environ.get(spec["env"], "").strip()
     if env:
-        return env, "GOVEE_DESKTOP_GUID environment variable"
+        return env, f"{spec['env']} environment variable"
     if sys.platform != "win32":
-        return None, "not on Windows and GOVEE_DESKTOP_GUID is not set"
+        value = _read_file_secret(spec["target"])
+        if value:
+            return value, _secrets_file()
+        flag = "--set-guid" if name == "govee-desktop-guid" else "--set-govee-key"
+        return None, f"not saved yet (python -m home_control {flag})"
 
-    value = read_credential(APP_TARGET)
+    value = read_credential(spec["target"])
     if value:
-        return value, f"Credential Manager ({APP_TARGET})"
+        return value, f"Credential Manager ({spec['target']})"
 
-    named = (settings or {}).get("guid_credential")
-    if named:
-        value = read_credential(named)
-        if value:
-            return value, f"Credential Manager ({named})"
-        return None, f"Credential Manager entry '{named}' was not found"
+    if name == "govee-desktop-guid":
+        named = (settings or {}).get("guid_credential")
+        if named:
+            value = read_credential(named)
+            if value:
+                return value, f"Credential Manager ({named})"
+            return None, f"Credential Manager entry '{named}' was not found"
+        ours = {s["target"] for s in SECRETS.values()}
+        others = [n for n in govee_credential_names() if n not in ours]
+        if len(others) == 1:
+            value = read_credential(others[0])
+            if value:
+                return value, f"Credential Manager ({others[0]})"
+        if len(others) > 1:
+            return None, ("several Govee entries in Credential Manager: " + ", ".join(others)
+                          + ". Set guid_credential in data/settings.json to the right one.")
+        return None, "not saved yet (python -m home_control --set-guid)"
+    return None, "not saved yet (python -m home_control --set-govee-key)"
 
-    others = [n for n in govee_credential_names() if n != APP_TARGET]
-    if len(others) == 1:
-        value = read_credential(others[0])
-        if value:
-            return value, f"Credential Manager ({others[0]})"
-    if len(others) > 1:
-        return None, ("several Govee entries in Credential Manager: " + ", ".join(others)
-                      + ". Set guid_credential in data/settings.json to the right one.")
-    return None, "no GUID found. Run: python -m home_control --set-guid"
+
+def get_guid(settings: dict):
+    return get_secret("govee-desktop-guid", settings)

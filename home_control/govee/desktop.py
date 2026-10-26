@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 
-from .base import Backend, BackendError, Device
+from .base import Backend, BackendError, Found
 
 ERRORS = {
     1: "Govee Desktop is not running",
@@ -96,7 +96,9 @@ def _load_runtime(dll_path):
 
 
 class GoveeDesktopBackend(Backend):
+    route = "desktop"
     label = "Govee Desktop"
+    capabilities = frozenset({"power", "brightness", "color", "segments"})
 
     def __init__(self, guid: str, dll_path: str = None):
         self._guid = guid
@@ -156,7 +158,7 @@ class GoveeDesktopBackend(Backend):
             raise BackendError(f"{what}: {describe(value)}")
         return value
 
-    def list_devices(self):
+    def discover(self):
         raw = self._call("GetDeviceBaseInfo")
         try:
             data = json.loads(str(raw))
@@ -165,21 +167,18 @@ class GoveeDesktopBackend(Backend):
         if isinstance(data, dict):
             data = next((data[k] for k in ("data", "devices", "Devices", "Data")
                          if isinstance(data.get(k), list)), [data])
-        devices = []
+        found = []
         for d in data:
+            if str(d.get("IsLANOn", "1")) != "1":
+                continue  # Govee Desktop can't reach it; the cloud may
             try:
                 segs = int(d.get("SegmentNums") or 1)
             except (TypeError, ValueError):
                 segs = 1
-            devices.append(Device(
-                name=str(d.get("Name", "")),
-                model=str(d.get("SkuType", "")),
-                segments=max(1, segs),
-                lan_on=str(d.get("IsLANOn", "1")) == "1",
-                extra={k: v for k, v in d.items()
-                       if k not in ("Name", "SkuType", "SegmentNums", "IsLANOn")},
-            ))
-        return devices
+            name = str(d.get("Name", ""))
+            found.append(Found(route=self.route, address=name, name=name,
+                               model=str(d.get("SkuType", "")), segments=max(1, segs)))
+        return found
 
     def power(self, name, on):
         return self._check(self._call("DeviceSwitchControl", name, 1 if on else 0), f"{name} power")

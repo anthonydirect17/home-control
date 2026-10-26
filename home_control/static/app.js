@@ -77,19 +77,20 @@ function targetOptions(select, { includeDevices = true } = {}) {
     select.append(el("optgroup", { label: "Groups" }, groups.map(g => el("option", { value: `group:${g}`, text: g }))));
   }
   if (includeDevices && S.devices.length) {
-    select.append(el("optgroup", { label: "Lights" }, S.devices.map(d => el("option", { value: `device:${d.name}`, text: d.name }))));
+    select.append(el("optgroup", { label: "Lights" }, S.devices.map(d => el("option", { value: `device:${d.id}`, text: d.name }))));
   }
   if ([...select.options].some(o => o.value === current)) select.value = current;
 }
 
 function targetLabel(target) {
   const [kind, ...rest] = target.split(":");
-  return `${rest.join(":")}${kind === "group" ? " (group)" : ""}`;
+  const name = rest.join(":");
+  return kind === "group" ? `${name} (group)` : deviceName(name);
 }
 
 // ---------- shared control block for a light or a group ----------
 
-function controlBlock(target) {
+function controlBlock(target, { effects = true, scenesFor = null } = {}) {
   const bright = el("input", { type: "range", min: 1, max: 100, value: 100, "aria-label": "Brightness" });
   bright.addEventListener("change", () => command("/api/control/brightness", { target, value: +bright.value }));
 
@@ -110,10 +111,36 @@ function controlBlock(target) {
         class: "swatch", title: c, "aria-label": `Set color ${c}`, style: `background:${c}`,
         onclick: () => { color.value = c.toLowerCase(); command("/api/control/color", { target, color: c }); },
       }))),
-    el("div", { class: "row" },
+    effects ? el("div", { class: "row" },
       el("label", { class: "grow" }, "Effect", fx),
       el("button", { class: "small", text: "Start", onclick: () => startEffect(target, fx.value) }),
-      el("button", { class: "small ghost", text: "Stop", onclick: () => command("/api/control/stop", { target }) })));
+      el("button", { class: "small ghost", text: "Stop", onclick: () => command("/api/control/stop", { target }) }))
+      : el("p", { class: "hint", text: "Effects need LAN Control on for this light (Govee Home app → device → settings → LAN Control)." }),
+    scenesFor ? sceneRow(target, scenesFor) : null);
+}
+
+// Govee's own scenes and your DIY scenes, loaded from the cloud the first time the list is opened.
+function sceneRow(target, deviceId) {
+  const select = el("select", { "aria-label": "Govee scene" }, el("option", { value: "", text: "Choose a Govee scene…" }));
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    loaded = true;
+    try {
+      const scenes = await api("GET", `/api/devices/${encodeURIComponent(deviceId)}/scenes`);
+      const kinds = [...new Set(scenes.map(x => x.kind))];
+      select.replaceChildren(el("option", { value: "", text: scenes.length ? "Choose a Govee scene…" : "No scenes for this light" }),
+        ...kinds.map(k => el("optgroup", { label: k }, scenes.filter(x => x.kind === k).map(x => el("option", { value: x.name, text: x.name })))));
+    } catch (e) { loaded = false; toast(e.message, true); }
+  };
+  select.addEventListener("focus", load);
+  select.addEventListener("pointerdown", load);
+  return el("div", { class: "row" },
+    el("label", { class: "grow" }, "Govee scene", select),
+    el("button", { class: "small", text: "Run", onclick: () => {
+      if (!select.value) return toast("Pick a scene first.", true);
+      command("/api/control/scene", { target, scene: select.value }, `Scene: ${select.value}`);
+    } }));
 }
 
 function fillEffectSelect(select) {
@@ -141,39 +168,60 @@ function startEffect(target, choice) {
 
 // ---------- devices ----------
 
+const ROUTE_LABELS = { lan: "LAN", cloud: "Cloud", desktop: "Govee Desktop", demo: "Demo" };
+
+function deviceName(id) {
+  const d = S.devices.find(x => x.id === id || x.name === id);
+  return d ? d.name : id;
+}
+
 function renderDevices() {
   const list = document.getElementById("device-list");
   if (!S.devices.length) {
-    list.replaceChildren(el("p", { class: "empty", text: S.status.connected ? "No devices found. Turn on LAN Control in the Govee Home app, then Refresh list." : "Not connected to Govee Desktop. See Settings." }));
+    list.replaceChildren(el("p", { class: "empty", text: S.status.connected
+      ? "No lights found. Turn on LAN Control in the Govee Home app or add your Govee API key, then Refresh list."
+      : "Not connected to Govee. See Settings." }));
     return;
   }
   list.replaceChildren(...S.devices.map(d => {
-    const card = el("article", { class: "card", "data-device": d.name },
+    const target = `device:${d.id}`;
+    const nameBox = el("div", { class: "card-title", text: d.name });
+    const renameInput = el("input", { value: d.name, maxlength: 60, "aria-label": "New name", hidden: true });
+    const renameBtn = el("button", { class: "small ghost", text: "Rename" });
+    renameBtn.addEventListener("click", async () => {
+      if (renameInput.hidden) { renameInput.hidden = false; nameBox.hidden = true; renameBtn.textContent = "Save"; renameInput.focus(); return; }
+      try {
+        S.devices = await api("POST", `/api/devices/${encodeURIComponent(d.id)}/rename`, { name: renameInput.value });
+        lastNames = ""; await pollDevices(); renderGroups();
+      } catch (e) { toast(e.message, true); }
+    });
+    return el("article", { class: "card", "data-device": d.id },
       el("div", { class: "card-head" },
-        el("div", {}, el("div", { class: "card-title", text: d.name }),
-          el("div", { class: "meta", text: `${d.model || "Govee"} · ${d.segments} segment${d.segments === 1 ? "" : "s"}` })),
-        el("span", { class: "chip", "data-chip": "1" })),
+        el("div", {}, nameBox, renameInput,
+          el("div", { class: "meta", text: `${d.model || "Govee"} · ${d.segments} segment${d.segments === 1 ? "" : "s"} · via ${d.routes.map(r => ROUTE_LABELS[r] || r).join(", ")}` })),
+        el("div", { class: "row" }, el("span", { class: "chip", "data-chip": "1" }), renameBtn)),
       el("div", { class: "strip", "data-strip": "1" }),
-      d.lan_on ? controlBlock(`device:${d.name}`) : el("p", { class: "hint", text: "LAN Control is off for this light. Turn it on in the Govee Home app (device → settings → LAN Control), then Refresh list." }),
+      el("div", { class: "meta", "data-source": "1" }),
+      controlBlock(target, { effects: d.can_effects, scenesFor: d.can_scenes ? d.id : null }),
       el("div", { class: "err", "data-err": "1" }));
-    return card;
   }));
   updateDeviceLive();
 }
 
 function updateDeviceLive() {
   for (const d of S.devices) {
-    const card = document.querySelector(`[data-device="${CSS.escape(d.name)}"]`);
+    const card = document.querySelector(`[data-device="${CSS.escape(d.id)}"]`);
     if (!card) continue;
     const chip = card.querySelector("[data-chip]");
     let text = "Unknown", cls = "chip";
-    if (!d.lan_on) { text = "LAN off"; cls = "chip warn"; }
-    else if (d.effect) { text = `Effect: ${d.effect.pattern}`; cls = "chip ok"; }
-    else if (d.on === true) { text = "On"; cls = "chip ok"; }
+    if (d.effect) { text = `Effect: ${d.effect.pattern}`; cls = "chip ok"; }
+    else if (d.scene && d.on !== false) { text = `Scene: ${d.scene}`; cls = "chip ok"; }
+    else if (d.on === true) { text = d.brightness ? `On · ${d.brightness}%` : "On"; cls = "chip ok"; }
     else if (d.on === false) { text = "Off"; }
     chip.textContent = text;
     chip.className = cls;
     paintStrip(card.querySelector("[data-strip]"), d.on === false ? null : d.frame, d.segments);
+    card.querySelector("[data-source]").textContent = d.reported ? "State reported by the light" : (d.on == null ? "" : "State as last sent from here");
     card.querySelector("[data-err]").textContent = d.error || "";
   }
 }
@@ -183,7 +231,7 @@ async function pollDevices() {
   try {
     S.devices = await api("GET", "/api/devices");
   } catch (_) { return; }
-  const names = S.devices.map(d => `${d.name}|${d.lan_on}`).join(",");
+  const names = S.devices.map(d => `${d.id}|${d.name}|${d.routes.join("+")}|${d.can_effects}|${d.can_scenes}`).join(",");
   if (names !== lastNames) {
     lastNames = names;
     renderDevices();
@@ -209,7 +257,7 @@ function renderGroups() {
     return el("article", { class: "card", "data-group": name },
       el("div", { class: "card-head" },
         el("div", {}, el("div", { class: "card-title", text: name }),
-          el("div", { class: "meta", text: `${g.members.join(", ")} · ${g.mode === "span" ? "linked" : "side by side"}` })),
+          el("div", { class: "meta", text: `${g.members.map(deviceName).join(", ")} · ${g.mode === "span" ? "linked" : "side by side"}` })),
         el("button", { class: "small ghost", text: "Delete", onclick: async () => {
           S.groups = await api("DELETE", `/api/groups/${encodeURIComponent(name)}`);
           renderGroups(); refreshTargetSelects();
@@ -227,7 +275,7 @@ function updateGroupLive() {
     const colors = [];
     let count = 0;
     for (const m of g.members) {
-      const d = S.devices.find(x => x.name === m);
+      const d = S.devices.find(x => x.id === m || x.name === m);
       if (!d) continue;
       count += d.segments;
       const frame = d.on === false || !d.frame ? Array(d.segments).fill("") : d.frame;
@@ -240,7 +288,7 @@ function updateGroupLive() {
 function renderGroupForm() {
   const box = document.getElementById("group-members");
   box.replaceChildren(...S.devices.map(d =>
-    el("label", {}, el("input", { type: "checkbox", value: d.name }), d.name)));
+    el("label", {}, el("input", { type: "checkbox", value: d.id }), d.name)));
 }
 
 document.getElementById("group-form").addEventListener("submit", async e => {
@@ -470,6 +518,7 @@ function renderSettings() {
   document.getElementById("s-lat").value = S.settings.latitude ?? "";
   document.getElementById("s-lon").value = S.settings.longitude ?? "";
   document.getElementById("s-fps").value = S.settings.default_fps ?? 4;
+  document.getElementById("s-desktop").checked = S.settings.use_govee_desktop !== false;
 }
 
 document.getElementById("settings-form").addEventListener("submit", async e => {
@@ -479,6 +528,7 @@ document.getElementById("settings-form").addEventListener("submit", async e => {
       latitude: document.getElementById("s-lat").value.trim(),
       longitude: document.getElementById("s-lon").value.trim(),
       default_fps: +document.getElementById("s-fps").value || 4,
+      use_govee_desktop: document.getElementById("s-desktop").checked,
     });
     renderSettings(); loadTimers();
     toast("Settings saved");
@@ -500,18 +550,21 @@ document.getElementById("reconnect").addEventListener("click", async () => {
   try {
     await api("POST", "/api/reconnect");
     await loadStatus(); await pollDevices();
-    toast(S.status.connected ? "Connected" : S.status.error, !S.status.connected);
+    toast(S.status.connected ? "Reconnected" : "Still not connected. See the details below.", !S.status.connected);
   } catch (e) { toast(e.message, true); }
 });
 
 async function loadStatus() {
   S.status = await api("GET", "/api/status");
+  const backends = Object.values(S.status.backends || {});
+  const up = backends.filter(b => b.connected);
   const chip = document.getElementById("conn");
-  chip.textContent = S.status.connected ? `${S.status.backend} · ${S.status.device_count} lights` : "Not connected";
-  chip.className = `chip ${S.status.connected ? "ok" : "bad"}`;
-  document.getElementById("s-status").textContent = S.status.connected
-    ? `Connected to ${S.status.backend}.`
-    : `Not connected: ${S.status.error || "unknown reason"}`;
+  chip.textContent = up.length ? `${up.map(b => b.label).join(" + ")} · ${S.status.device_count} lights` : "Not connected";
+  chip.className = `chip ${up.length === backends.length ? "ok" : up.length ? "warn" : "bad"}`;
+  document.getElementById("s-status").replaceChildren(...backends.map(b =>
+    el("div", { class: "status-line" },
+      el("span", { class: `chip ${b.connected ? "ok" : "bad"}`, text: b.label }),
+      el("span", { class: b.connected ? "meta" : "err", text: b.connected ? (b.error || b.note || "Connected") : (b.error || "Not connected") }))));
 }
 
 // ---------- tabs and startup ----------
