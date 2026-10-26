@@ -1,7 +1,7 @@
 """Saved groups, effect presets, schedules and settings.
 
 Everything lives in one JSON file under data/ (ignored by git, since it holds
-device names and your location). Writes go to a temp file first so a crash
+device names, network addresses and your location). Writes go to a temp file first so a crash
 can't leave a half-written file.
 """
 
@@ -18,10 +18,13 @@ DEFAULTS = {
         "guid_credential": None,
         "govee_dll": None,
         "default_fps": 4,
+        "use_govee_desktop": True,
     },
     "groups": {},      # name -> {"members": [device names], "mode": "span" | "mirror"}
     "presets": {},     # name -> {"pattern": str, "params": dict}
     "schedules": [],   # see scheduler.py
+    "aliases": {},     # device id -> name you gave it here
+    "lan_cache": {},   # device id -> {"ip", "sku"} from the last LAN scan
 }
 
 
@@ -52,6 +55,13 @@ class Store:
         with self._lock:
             return copy.deepcopy(self._data[key])
 
+    def put(self, key, value):
+        with self._lock:
+            if key not in DEFAULTS:
+                raise KeyError(key)
+            self._data[key] = copy.deepcopy(value)
+            self._save()
+
     # settings
     def update_settings(self, changes: dict):
         with self._lock:
@@ -60,6 +70,14 @@ class Store:
                     self._data["settings"][k] = v
             self._save()
             return copy.deepcopy(self._data["settings"])
+
+    def set_alias(self, device_id, name):
+        with self._lock:
+            if name:
+                self._data["aliases"][device_id] = name
+            else:
+                self._data["aliases"].pop(device_id, None)
+            self._save()
 
     # groups
     def put_group(self, name, members, mode="span"):

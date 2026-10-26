@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from home_control.controller import Controller
 from home_control.govee.demo import DemoBackend
+from home_control.hub import Hub
 from home_control.scheduler import Scheduler
 from home_control.server import create_app
 from home_control.store import Store
@@ -17,7 +18,7 @@ from home_control.store import Store
 def env(tmp_path):
     store = Store(str(tmp_path / "settings.json"))
     backend = DemoBackend()
-    controller = Controller(backend, store)
+    controller = Controller(Hub([backend], store), store)
     controller.connect()
     sched = Scheduler(controller, store)
     client = TestClient(create_app(controller, store, sched))
@@ -49,6 +50,7 @@ def test_power_brightness_color(env):
     assert client.post("/api/control/color", json={"target": t, "color": "#00ff00"}).json()["ok"]
     assert ("color", "Demo Lamp", (0, 255, 0)) in backend.calls
     lamp = next(d for d in client.get("/api/devices").json() if d["name"] == "Demo Lamp")
+    assert lamp["id"] == "DEMO0003" and lamp["routes"] == ["demo"]
     assert lamp["on"] is True and lamp["brightness"] == 40 and lamp["color"] == "#00FF00"
 
 
@@ -88,7 +90,7 @@ def test_manual_color_stops_running_effect(env):
     client.post("/api/control/effect", json={"target": t, "pattern": "rainbow", "fps": 10})
     assert wait_for(lambda: any(c[0] == "segments" for c in backend.calls))
     client.post("/api/control/color", json={"target": t, "color": "#0000FF"})
-    assert controller.state["Demo Porch Strip"]["effect"] is None
+    assert controller.state["DEMO0001"]["effect"] is None
 
 
 def test_linked_group_spans_segments_across_members(env):
@@ -153,3 +155,46 @@ def test_store_survives_restart(tmp_path):
     s2 = Store(path)
     assert s2.get("groups")["G"]["mode"] == "mirror"
     assert s2.get("settings")["latitude"] == 1.5 and s2.get("settings")["default_fps"] == 4
+
+
+def test_scenes_rename_and_partial_settings(env):
+    client, backend, *_ = env
+    scenes = client.get("/api/devices/DEMO0001/scenes").json()
+    assert {"name": "Aurora", "kind": "Govee scene"} in scenes
+    r = client.post("/api/control/scene", json={"target": "device:DEMO0001", "scene": "aurora"}).json()
+    assert r["ok"] and ("scene", "Demo Porch Strip", "Aurora") in backend.calls
+    r = client.post("/api/control/scene", json={"target": "device:DEMO0001", "scene": "Nope"}).json()
+    assert not r["ok"]
+
+    devices = client.post("/api/devices/DEMO0003/rename", json={"name": "Desk lamp"}).json()
+    assert any(d["id"] == "DEMO0003" and d["name"] == "Desk lamp" for d in devices)
+    assert client.post("/api/control/power", json={"target": "device:Desk lamp", "on": True}).json()["ok"]
+
+    client.post("/api/settings", json={"latitude": 40.71, "longitude": -74.01})
+    s = client.post("/api/settings", json={"use_govee_desktop": False}).json()
+    assert s["latitude"] == 40.71 and s["use_govee_desktop"] is False
+
+
+def test_state_poll_reports_light_state(env):
+    client, backend, controller, *_ = env
+    client.post("/api/control/color", json={"target": "device:Demo Lamp", "color": "#123456"})
+    controller.state["DEMO0003"].update(color=None, reported=False)
+    controller.poll_state()
+    lamp = next(d for d in client.get("/api/devices").json() if d["id"] == "DEMO0003")
+    assert lamp["reported"] and lamp["color"] == "#123456"
+
+
+def test_secrets_file_on_non_windows(tmp_path, monkeypatch):
+    import os
+    import sys
+    from home_control import secrets
+    if sys.platform == "win32":
+        pytest.skip("Windows uses Credential Manager")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("GOVEE_API_KEY", raising=False)
+    assert secrets.get_secret("govee-api-key")[0] is None
+    where = secrets.save_secret_value("govee-api-key", "abc123")
+    assert oct(os.stat(where).st_mode & 0o777) == "0o600"
+    assert secrets.get_secret("govee-api-key") == ("abc123", where)
+    monkeypatch.setenv("GOVEE_API_KEY", "from-env")
+    assert secrets.get_secret("govee-api-key")[0] == "from-env"

@@ -30,6 +30,14 @@ class ColorBody(Target):
     color: str
 
 
+class SceneBody(Target):
+    scene: str
+
+
+class RenameBody(BaseModel):
+    name: str = ""
+
+
 class EffectBody(Target):
     pattern: Optional[str] = None
     preset: Optional[str] = None
@@ -85,7 +93,7 @@ def create_app(controller, store, scheduler):
 
     @app.get("/api/status")
     def status():
-        return dict(controller.status, device_count=len(controller.devices))
+        return controller.status()
 
     @app.post("/api/reconnect")
     def reconnect():
@@ -99,8 +107,27 @@ def create_app(controller, store, scheduler):
     def refresh():
         try:
             controller.refresh()
+            controller.poll_state()
         except BackendError as e:
             raise HTTPException(502, str(e))
+        return controller.snapshot()
+
+    @app.get("/api/devices/{key}/scenes")
+    def device_scenes(key: str):
+        try:
+            return controller.scenes(key)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        except BackendError as e:
+            raise HTTPException(502, str(e))
+
+    @app.post("/api/devices/{key}/rename")
+    def rename(key: str, body: RenameBody):
+        dev = controller.device(key)
+        if dev is None:
+            raise HTTPException(404, "no such light")
+        store.set_alias(dev.id, body.name.strip())
+        controller.refresh()
         return controller.snapshot()
 
     @app.post("/api/control/power")
@@ -114,6 +141,10 @@ def create_app(controller, store, scheduler):
     @app.post("/api/control/color")
     def color(body: ColorBody):
         return run(controller.color, body.target, body.color)
+
+    @app.post("/api/control/scene")
+    def scene(body: SceneBody):
+        return run(controller.scene, body.target, body.scene)
 
     @app.post("/api/control/effect")
     def effect(body: EffectBody):
@@ -226,9 +257,11 @@ def create_app(controller, store, scheduler):
     @app.post("/api/settings")
     def put_settings(body: dict):
         for key in ("latitude", "longitude"):
-            if body.get(key) in ("", None):
+            if key not in body:
+                continue
+            if body[key] in ("", None):
                 body[key] = None
-            elif key in body:
+            else:
                 try:
                     body[key] = float(body[key])
                 except (TypeError, ValueError):
