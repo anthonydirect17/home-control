@@ -112,15 +112,15 @@ Ask the owner which OS the server runs. The steps are written for **Windows**; L
    - The owner runs `python -m home_control --set-govee-key` **in their own terminal** and types the key. It was emailed by Govee to the owner's Govee account email.
    - Never ask for the key in chat.
    - Govee Desktop is **not** needed on the server. Don't install it unless the owner wants per-segment effects.
-7. **Windows Firewall:** allow inbound for Python on **Private** networks, and limit it:
-   - UDP 4002 (Govee LAN replies)
-   - TCP 8780 (the page) only from the Tailscale interface/range `100.64.0.0/10` and localhost
+7. **Windows Firewall:** scope every inbound rule by port and remote address, not by program:
+   - TCP 8780 (the page) only from the Tailscale range `100.64.0.0/10`. Don't tie the rule to the server's own Tailscale address.
+   - UDP 4002 only, for Govee LAN replies. 4001 and 4003 are outgoing only.
    - Later: the Sonos audio-file port (phase 4)
 8. **Start it for real:**
    ```
-   python -m home_control --host 100.x.y.z --no-browser
+   python -m home_control --host tailscale --no-browser
    ```
-   This binds the Tailscale address. If the owner also wants it reachable at `localhost` on the server itself, discuss binding `0.0.0.0` together with a firewall rule restricting TCP 8780 to Tailscale and localhost.
+   `--host tailscale` binds to the machine's current Tailscale address, looked up at every start, so an address change never breaks it. If the owner also wants it reachable at `localhost` on the server itself, discuss binding `0.0.0.0` together with a firewall rule restricting TCP 8780 to Tailscale and localhost.
 9. **Auto-start** (after phase 1 passes):
    - **Windows:** a Task Scheduler task with these settings:
      - trigger "At startup"

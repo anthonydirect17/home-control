@@ -6,7 +6,7 @@ This covers installing Home Control on a Windows PC that stays on. It runs with 
 |---|---|
 | `APPUSER` | the Windows account the app runs under; a dedicated **standard** account is best |
 | `C:\Users\APPUSER\home-control` | where the repo is cloned (`REPO` below) |
-| `TAILSCALE_IP` | the server's Tailscale address (`100.x.y.z`) |
+| `TAILSCALE_IP` | the server's current Tailscale address (`100.x.y.z`), only for opening the page from another device; nothing is configured with it |
 | `PORT` | the port for the page |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
 
@@ -75,13 +75,15 @@ Each command asks with hidden typing and saves into the active secrets store. No
 Scope every rule by **port and remote address**, never by program.
 
 ```powershell
-# The page: only from Tailscale addresses
+# The page: only from Tailscale addresses. Not tied to the server's own Tailscale
+# address, so it keeps working if that address ever changes.
 New-NetFirewallRule -DisplayName "Home Control page (Tailscale)" -Direction Inbound -Protocol TCP `
-  -LocalPort PORT -LocalAddress TAILSCALE_IP -RemoteAddress 100.64.0.0/10 -Action Allow -Profile Any
+  -LocalPort PORT -RemoteAddress 100.64.0.0/10 -Action Allow -Profile Any
 
-# Govee LAN API replies (lights answer scans and status requests on UDP 4002)
+# Govee LAN API: lights answer scans and status requests on UDP 4002. That's the
+# only inbound port; 4001 (scan) and 4003 (commands) are outgoing only.
 New-NetFirewallRule -DisplayName "Home Control Govee LAN" -Direction Inbound -Protocol UDP `
-  -LocalPort 4001-4003 -RemoteAddress LAN_SUBNET -Action Allow -Profile Private
+  -LocalPort 4002 -RemoteAddress LAN_SUBNET -Action Allow -Profile Private
 ```
 
 Undo:
@@ -97,7 +99,7 @@ Also limit the page port to your own devices in Tailscale's access rules (admin 
 
 ```powershell
 cd C:\Users\APPUSER\home-control\scripts\windows
-powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -User APPUSER -Repo C:\Users\APPUSER\home-control -BindAddress TAILSCALE_IP -Port PORT
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -User APPUSER -Repo C:\Users\APPUSER\home-control -BindAddress tailscale -Port PORT
 Start-ScheduledTask -TaskName HomeControl
 ```
 
@@ -142,4 +144,4 @@ It never includes light names, addresses, errors or secrets.
 - **Priority:** the task runs below normal priority.
 - **Footprint:** keep `data\` small. Logs rotate on their own, and camera snapshots and clips (phase 2) are cached briefly in memory, not kept on disk.
 - **No visible windows:** any helper process the app starts later (e.g. the Node helper in phase 2) must be started with `CREATE_NO_WINDOW` so no window flashes.
-- **Bind addresses:** the page binds only to `TAILSCALE_IP`. Internal helpers bind only to `127.0.0.1`.
+- **Bind addresses:** the page binds only to the Tailscale address (`--host tailscale` looks it up at every start, so an address change needs no edits). Internal helpers bind only to `127.0.0.1`.

@@ -77,7 +77,7 @@ or `python -m home_control`. To run it on an always-on Windows server (hidden, s
 - **The app must be running** for effects, timers and rules. Timers you set in the Govee Home app still run on their own.
 - **Real state:** lights on your home network report their real state every 20 seconds. Lights reached only through the cloud show what this app last sent; polling them would use up Govee's daily request limit.
 - **Effects speed:** effects send 4 updates per second to each light by default. Change it in Settings, and lower it if lights lag or skip.
-- **Where the page opens:** the app listens on this PC only (127.0.0.1) unless you start it with `--host`. For example, `--host 100.x.y.z` uses the PC's Tailscale address, so your other devices on Tailscale can open it. The page has no login, so only use addresses on networks you trust.
+- **Where the page opens:** the app listens on this PC only (127.0.0.1) unless you start it with `--host`. `--host tailscale` uses the PC's current Tailscale address, so your other devices on Tailscale can open it. The PIN protects the page, but still only expose it on networks you trust.
 - **Govee Desktop and network scanning:** if Govee Desktop is running, it may hold the network port used to find lights. Commands still work, but newly added lights won't be found until Govee Desktop is closed. The app remembers lights it has already found.
 
 ## What stays off GitHub

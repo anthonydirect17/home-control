@@ -24,7 +24,11 @@
   Undo: .\uninstall-autostart.ps1 -TaskName <same name>
 
 .EXAMPLE
-  .\install-autostart.ps1 -User APPUSER -Repo C:\Users\APPUSER\home-control -BindAddress TAILSCALE_IP -Port PORT
+  .\install-autostart.ps1 -User APPUSER -Repo C:\Users\APPUSER\home-control -BindAddress tailscale -Port PORT
+
+  "-BindAddress tailscale" binds to whatever Tailscale address the machine has
+  each time the app starts, so nothing needs changing if that address changes.
+  If Tailscale isn't up yet at boot, the app retries every minute.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$User,
