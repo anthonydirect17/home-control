@@ -64,6 +64,9 @@ class Backend:
     def discover(self):
         raise NotImplementedError
 
+    def close(self):
+        """Release sockets and threads. Called when the app stops or restarts."""
+
     def status_note(self):
         """Extra detail for the status panel, or None."""
         return None

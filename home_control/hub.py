@@ -75,6 +75,13 @@ class Hub:
             self.status[route]["note"] = b.status_note()
         return self.status
 
+    def close(self):
+        for b in self.backends.values():
+            try:
+                b.close()
+            except Exception:
+                pass
+
     def refresh(self):
         found = []
         for route, b in self.backends.items():

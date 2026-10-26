@@ -1,15 +1,27 @@
-"""Local web server: the JSON API plus the control page at http://127.0.0.1:8765/."""
+"""Local web server: the JSON API plus the control page.
+
+Everything under /api/ needs a remembered device (the page PIN), except
+/api/health (for ServerWatch; no names, addresses or secrets) and /api/auth/*.
+"""
 
 import os
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import patterns, scheduler as sched
+from . import __version__, patterns, scheduler as sched
+from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
+
+# Settings the page may change. Others (secrets store, DLL path, credential
+# names) are only set from the command line on the server itself.
+PAGE_SETTINGS = {"latitude", "longitude", "default_fps", "use_govee_desktop"}
+OPEN_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -65,6 +77,10 @@ class PreviewBody(BaseModel):
     fps: float = Field(default=8, gt=0, le=20)
 
 
+class PinBody(BaseModel):
+    pin: str = ""
+
+
 class ScheduleBody(BaseModel):
     id: Optional[str] = None
     name: str
@@ -75,8 +91,64 @@ class ScheduleBody(BaseModel):
     action: dict
 
 
-def create_app(controller, store, scheduler):
+def iso(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds") if ts else None
+
+
+def confirm_with_pin(gate, pin):
+    """For arm, disarm and sirens: the PIN is required on every request, even on a remembered device."""
+    try:
+        gate.check_action_pin(pin)
+    except PinError as e:
+        raise HTTPException(429 if e.locked_for else 403, str(e))
+
+
+def create_app(controller, store, scheduler, gate, started_at=None):
     app = FastAPI(title="Home Control")
+    started_at = started_at or time.time()
+
+    @app.middleware("http")
+    async def require_pin(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") and path not in OPEN_PATHS:
+            if not gate.cookie_ok(request.cookies.get(COOKIE_NAME)):
+                return JSONResponse({"detail": "PIN required", "pin_required": True}, status_code=401)
+        return await call_next(request)
+
+    @app.get("/api/health")
+    def health():
+        st = controller.status()
+        return {
+            "app": "home-control",
+            "version": __version__,
+            "started_at": iso(started_at),
+            "uptime_seconds": int(time.time() - started_at),
+            "connections": {route: {"label": b["label"], "up": bool(b["connected"])}
+                            for route, b in st["backends"].items()},
+            "light_count": st["device_count"],
+            "effects_running": controller.effects_running(),
+            "last_event_at": iso(controller.last_activity),
+        }
+
+    @app.get("/api/auth/status")
+    def auth_status(request: Request):
+        return {"required": gate.required, "pin_set": gate.pin_set,
+                "signed_in": gate.cookie_ok(request.cookies.get(COOKIE_NAME)), "locked_for": gate.locked_for()}
+
+    @app.post("/api/auth/login")
+    def login(body: PinBody, response: Response):
+        try:
+            gate.check_pin(body.pin)
+        except PinError as e:
+            raise HTTPException(429 if e.locked_for else 401, str(e))
+        response.set_cookie(COOKIE_NAME, gate.issue_cookie(), max_age=REMEMBER_SECONDS, httponly=True,
+                            samesite="strict", path="/")
+        return {"ok": True}
+
+    @app.post("/api/auth/logout")
+    def logout(response: Response):
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return {"ok": True}
 
     def run(fn, *args):
         try:
@@ -256,6 +328,7 @@ def create_app(controller, store, scheduler):
 
     @app.post("/api/settings")
     def put_settings(body: dict):
+        body = {k: v for k, v in body.items() if k in PAGE_SETTINGS}
         for key in ("latitude", "longitude"):
             if key not in body:
                 continue

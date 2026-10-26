@@ -7,6 +7,17 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="pin-screen" class="pin-screen" hidden>
+  <form id="pin-form" class="panel pin-panel">
+    <h1>Home Control</h1>
+    <p id="pin-message" class="hint">Enter your 6-digit PIN. This device will be remembered for 30 days.</p>
+    <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password"
+           pattern="[0-9]{6}" maxlength="6" aria-label="PIN" required>
+    <button type="submit" id="pin-submit">Unlock</button>
+    <p id="pin-error" class="err" role="alert"></p>
+  </form>
+</div>
+
 <header class="top">
   <div class="top-inner">
     <div class="brand">
@@ -147,6 +158,11 @@
       <h3>Connections</h3>
       <div id="s-status" class="status-list">…</div>
       <button id="reconnect" class="ghost">Reconnect</button>
+    </div>
+    <div class="panel">
+      <h3>This device</h3>
+      <p class="hint">This browser is remembered for 30 days after you enter the PIN.</p>
+      <button id="sign-out" class="ghost">Forget this device</button>
     </div>
   </section>
 </main>

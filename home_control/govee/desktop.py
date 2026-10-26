@@ -53,6 +53,7 @@ def find_dll(explicit=None):
              "Get-Process | Where-Object { $_.Path -like '*Govee*' } | "
              "Select-Object -ExpandProperty Path -Unique"],
             capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # no window flash
         ).stdout
         folders += [os.path.dirname(p.strip()) for p in out.splitlines() if p.strip()]
     except (OSError, subprocess.SubprocessError):

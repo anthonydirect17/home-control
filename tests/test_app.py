@@ -6,6 +6,7 @@ from datetime import datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from home_control.auth import PinGate
 from home_control.controller import Controller
 from home_control.govee.demo import DemoBackend
 from home_control.hub import Hub
@@ -21,7 +22,8 @@ def env(tmp_path):
     controller = Controller(Hub([backend], store), store)
     controller.connect()
     sched = Scheduler(controller, store)
-    client = TestClient(create_app(controller, store, sched))
+    open_gate = PinGate(None, b"k" * 32, required=False)  # demo-style: no PIN; PIN tests are in test_security.py
+    client = TestClient(create_app(controller, store, sched, open_gate))
     yield client, backend, controller, store, sched
     controller.stop_all()
 

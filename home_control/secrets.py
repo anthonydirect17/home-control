@@ -2,15 +2,20 @@
 
 Each secret is looked up, in order:
   1. its environment variable
-  2. on Windows: Credential Manager, under the app's own entry name
-     on Linux/macOS: ~/.config/home-control/secrets.json (readable by you only)
-     (python -m home_control --set-guid / --set-govee-key saves it there)
+  2. the secrets store:
+     - Windows, default: Credential Manager, under the app's own entry name
+     - Windows, after `--secrets-store file`: %LOCALAPPDATA%\\home-control\\secrets.json,
+       locked so only this Windows account can open it. This is the fallback
+       for when Credential Manager can't be read with nobody signed in.
+     - Linux/macOS: ~/.config/home-control/secrets.json (readable by you only)
+     The --set-... commands save into whichever store is active.
   3. for the Govee Desktop GUID only: the Credential Manager entry named in
      settings ("guid_credential"), or the only other entry with "govee" in its name
 """
 
 import json
 import os
+import subprocess
 import sys
 
 SECRETS = {
@@ -18,7 +23,19 @@ SECRETS = {
                            "label": "Govee Desktop API GUID (Settings -> API in Govee Desktop)"},
     "govee-api-key": {"env": "GOVEE_API_KEY", "target": "home-control/govee-api-key",
                       "label": "Govee API key (emailed by Govee)"},
+    # Salted hash of the page PIN (never the PIN itself); see auth.py.
+    "page-pin-hash": {"env": "HOME_CONTROL_PIN_HASH", "target": "home-control/page-pin-hash",
+                      "label": "page PIN hash"},
+    # Random key that signs the "remember this device" cookies; created automatically.
+    "session-key": {"env": "HOME_CONTROL_SESSION_KEY", "target": "home-control/session-key",
+                    "label": "cookie signing key"},
 }
+SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin"}
+
+STORE_CREDMAN = "credential-manager"
+STORE_FILE = "file"
+# Windows only: start a console program without flashing a window.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 APP_TARGET = SECRETS["govee-desktop-guid"]["target"]
 
 if sys.platform == "win32":
@@ -112,39 +129,97 @@ def govee_credential_names():
         _advapi.CredFree(creds)
 
 
-def _secrets_file():
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+def secrets_store(settings=None):
+    """Which store is active: Credential Manager (Windows default) or the private file."""
+    if sys.platform != "win32":
+        return STORE_FILE
+    chosen = (settings or {}).get("secrets_store") or STORE_CREDMAN
+    return STORE_FILE if chosen == STORE_FILE else STORE_CREDMAN
+
+
+def secrets_file():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, "home-control", "secrets.json")
 
 
-def _read_file_secret(target):
+def _current_user_sid():
     try:
-        with open(_secrets_file(), encoding="utf-8") as f:
-            return (json.load(f) or {}).get(target)
-    except (OSError, ValueError):
-        return None
-
-
-def save_secret_value(name: str, value: str):
-    """Store a secret the right way for this OS; returns where it went."""
-    target = SECRETS[name]["target"]
-    if sys.platform == "win32":
-        write_credential(target, value)
-        return f"Windows Credential Manager as '{target}'"
-    path = _secrets_file()
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    data = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f) or {}
-    except (OSError, ValueError):
+        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
+                             timeout=15, creationflags=NO_WINDOW).stdout
+        sid = out.strip().split(",")[-1].strip().strip('"')
+        if sid.startswith("S-1-"):
+            return sid
+    except (OSError, subprocess.SubprocessError):
         pass
+    return None
+
+
+def icacls_commands(path, is_dir, sid):
+    """The icacls calls that leave only this account with access (no inherited rights)."""
+    grant = f"*{sid}:(OI)(CI)F" if is_dir else f"*{sid}:F"
+    return [["icacls", path, "/inheritance:r", "/grant:r", grant]]
+
+
+def _lock_down(path, is_dir):
+    if sys.platform != "win32":
+        os.chmod(path, 0o700 if is_dir else 0o600)
+        return
+    sid = _current_user_sid()
+    if not sid:
+        raise OSError("couldn't find this Windows account's SID to lock down the secrets file")
+    for cmd in icacls_commands(path, is_dir, sid):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
+        if result.returncode != 0:
+            raise OSError(f"icacls failed on {path}: {result.stdout.strip() or result.stderr.strip()}")
+
+
+def _read_file_all():
+    try:
+        with open(secrets_file(), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_file_secret(target, value):
+    path = secrets_file()
+    folder = os.path.dirname(path)
+    new_folder = not os.path.isdir(folder)
+    os.makedirs(folder, exist_ok=True)
+    if new_folder or sys.platform != "win32":
+        _lock_down(folder, is_dir=True)  # files created inside inherit the locked-down rights
+    data = _read_file_all()
     data[target] = value
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
+    _lock_down(path, is_dir=False)
     return path
+
+
+def save_secret_value(name: str, value: str, settings: dict = None):
+    """Store a secret in the active store; returns where it went (never the value)."""
+    target = SECRETS[name]["target"]
+    if secrets_store(settings) == STORE_CREDMAN:
+        write_credential(target, value)
+        return f"Windows Credential Manager as '{target}'"
+    return _write_file_secret(target, value)
+
+
+def copy_secrets_to_file(settings: dict = None):
+    """Copy every secret found in Credential Manager into the private file. Returns the names copied."""
+    copied = []
+    for name, spec in SECRETS.items():
+        value = read_credential(spec["target"])
+        if value:
+            _write_file_secret(spec["target"], value)
+            copied.append(name)
+    return copied
 
 
 def get_secret(name: str, settings: dict = None):
@@ -153,12 +228,13 @@ def get_secret(name: str, settings: dict = None):
     env = os.environ.get(spec["env"], "").strip()
     if env:
         return env, f"{spec['env']} environment variable"
-    if sys.platform != "win32":
-        value = _read_file_secret(spec["target"])
+    missing = f"not saved yet (python -m home_control {SET_FLAGS[name]})" if name in SET_FLAGS else "not saved yet"
+
+    if secrets_store(settings) == STORE_FILE:
+        value = _read_file_all().get(spec["target"])
         if value:
-            return value, _secrets_file()
-        flag = "--set-guid" if name == "govee-desktop-guid" else "--set-govee-key"
-        return None, f"not saved yet (python -m home_control {flag})"
+            return value, secrets_file()
+        return None, missing
 
     value = read_credential(spec["target"])
     if value:
@@ -180,8 +256,7 @@ def get_secret(name: str, settings: dict = None):
         if len(others) > 1:
             return None, ("several Govee entries in Credential Manager: " + ", ".join(others)
                           + ". Set guid_credential in data/settings.json to the right one.")
-        return None, "not saved yet (python -m home_control --set-guid)"
-    return None, "not saved yet (python -m home_control --set-govee-key)"
+    return None, missing
 
 
 def get_guid(settings: dict):

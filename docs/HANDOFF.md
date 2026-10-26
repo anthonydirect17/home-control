@@ -297,10 +297,16 @@ Library: **`ring-client-api` 14.3.0** (Node `^20 || ^22 || ^24`). The facts belo
   - **Test only with the owner present**, and warn them first because it's loud.
 
 **Phase 5: hardening**
-- auto-start and crash restart
-- log files with rotation in `data/logs/`
-- a health panel: helper running, token age, Govee cloud request count, last event times
-- optional login on the page (e.g. a passcode) even inside Tailscale
+- **Done ahead of time:**
+  - hidden auto-start with crash restart (`scripts/windows/`, `--keep-running`)
+  - rotated logs (`--log-file`)
+  - `GET /api/health`
+  - the page PIN (`--set-pin`)
+  - the private-file secrets fallback (`--secrets-store file`)
+  - see [WINDOWS_SERVER_SETUP.md](WINDOWS_SERVER_SETUP.md)
+- **Still to do:**
+  - helper status and Ring token age in the health output once phase 2 exists
+  - stopping effects automatically when the machine is busy
 
 **Phase 6: later**
 - **Google:** `pychromecast` 14.x for Nest speakers (local; announcements and sounds) when the owner buys any. Nest cameras and thermostats need Google's Device Access program (one-time fee) and are cloud-based.
