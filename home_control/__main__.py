@@ -129,7 +129,9 @@ def build_gate(store, demo):
 def main():
     parser = argparse.ArgumentParser(prog="home_control", description="Control center for Govee lights.")
     parser.add_argument("--demo", action="store_true", help="use pretend lights")
-    parser.add_argument("--host", default="127.0.0.1", help="address to serve on (default: this PC only)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="address to serve on (default: this PC only); 'tailscale' = this machine's "
+                             "current Tailscale address, looked up at every start")
     parser.add_argument("--port", type=int, default=8780)  # 8765 is reserved for the trading desk; never use it
     parser.add_argument("--data", default=os.path.join(ROOT, "data"), help="folder for saved settings")
     parser.add_argument("--no-browser", action="store_true", help="don't open the page automatically")
@@ -158,7 +160,11 @@ def main():
     if args.log_file:
         open_log(args.log_file)
     if not args.keep_running:
-        return serve(args, store)
+        try:
+            return serve(args, store)
+        except RuntimeError as e:  # e.g. --host tailscale with Tailscale not running
+            print(f"Can't start: {e}")
+            return 2
     # Hidden auto-start: if the app stops for any reason other than Ctrl+C, start it again.
     while True:
         try:
@@ -175,9 +181,11 @@ def main():
 def serve(args, store):
     from .controller import Controller, StatePoller
     from .hub import Hub
+    from .netaddr import resolve_host
     from .scheduler import Scheduler
     from .server import create_app
 
+    host = resolve_host(args.host)  # raises if Tailscale isn't up yet; --keep-running retries
     started_at = time.time()
     gate = build_gate(store, args.demo)
     hub = Hub(build_backends(store, args), store)
@@ -197,12 +205,17 @@ def serve(args, store):
 
     import uvicorn
     app = create_app(controller, store, scheduler, gate, started_at)
-    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}/"
-    print(f"Home Control is running at {url}  (Ctrl+C to stop)")
-    if not args.no_browser:
+    if args.host.lower() == "tailscale":
+        # The address itself stays out of the log.
+        url = None
+        print(f"Home Control is running on this machine's Tailscale address, port {args.port}")
+    else:
+        url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '') else host}:{args.port}/"
+        print(f"Home Control is running at {url}  (Ctrl+C to stop)")
+    if url and not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        uvicorn.run(app, host=host, port=args.port, log_level="warning")
     finally:
         scheduler.stop()
         poller.stop()

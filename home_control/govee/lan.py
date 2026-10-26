@@ -7,8 +7,9 @@ switched on in the Govee Home app. Protocol (from Govee's LAN API docs):
   - commands go to the light's ip on UDP 4003: turn, brightness, colorwc,
     devStatus (the light answers devStatus on 4002 with its current state)
 
-The LAN API colors a light as a whole; per-segment effects still need Govee
-Desktop. If another program (often Govee Desktop) is already listening on
+Only UDP 4002 needs to be open inbound: 4001 (scan) and 4003 (commands) are
+outgoing only. The LAN API colors a light as a whole; per-segment effects
+still need Govee Desktop. If another program (often Govee Desktop) is already listening on
 port 4002, commands still work but discovery and state reading don't.
 """
 
@@ -173,7 +174,8 @@ class LanBackend(Backend):
         try:
             self._send_sock.sendto(payload, (ip, self.control_port))
         except OSError as e:
-            raise BackendError(f"couldn't reach {ip}: {e}") from e
+            # No address in the message: errors are shown on the page.
+            raise BackendError(f"couldn't reach the light over the network: {e.strerror or e}") from e
 
     def power(self, address, on):
         self._send(address, "turn", {"value": 1 if on else 0})
