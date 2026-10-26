@@ -1,0 +1,114 @@
+"""Saved groups, effect presets, schedules and settings.
+
+Everything lives in one JSON file under data/ (ignored by git, since it holds
+device names and your location). Writes go to a temp file first so a crash
+can't leave a half-written file.
+"""
+
+import copy
+import json
+import os
+import threading
+import uuid
+
+DEFAULTS = {
+    "settings": {
+        "latitude": None,
+        "longitude": None,
+        "guid_credential": None,
+        "govee_dll": None,
+        "default_fps": 4,
+    },
+    "groups": {},      # name -> {"members": [device names], "mode": "span" | "mirror"}
+    "presets": {},     # name -> {"pattern": str, "params": dict}
+    "schedules": [],   # see scheduler.py
+}
+
+
+class Store:
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.RLock()
+        self._data = copy.deepcopy(DEFAULTS)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            for key, default in DEFAULTS.items():
+                value = loaded.get(key, copy.deepcopy(default))
+                if isinstance(default, dict) and key == "settings":
+                    merged = copy.deepcopy(default)
+                    merged.update(value or {})
+                    value = merged
+                self._data[key] = value
+
+    def _save(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, indent=2)
+        os.replace(tmp, self.path)
+
+    def get(self, key):
+        with self._lock:
+            return copy.deepcopy(self._data[key])
+
+    # settings
+    def update_settings(self, changes: dict):
+        with self._lock:
+            for k, v in changes.items():
+                if k in DEFAULTS["settings"]:
+                    self._data["settings"][k] = v
+            self._save()
+            return copy.deepcopy(self._data["settings"])
+
+    # groups
+    def put_group(self, name, members, mode="span"):
+        if mode not in ("span", "mirror"):
+            raise ValueError("mode must be 'span' or 'mirror'")
+        with self._lock:
+            self._data["groups"][name] = {"members": list(members), "mode": mode}
+            self._save()
+
+    def delete_group(self, name):
+        with self._lock:
+            self._data["groups"].pop(name, None)
+            self._save()
+
+    # presets
+    def put_preset(self, name, pattern, params):
+        with self._lock:
+            self._data["presets"][name] = {"pattern": pattern, "params": dict(params or {})}
+            self._save()
+
+    def delete_preset(self, name):
+        with self._lock:
+            self._data["presets"].pop(name, None)
+            self._save()
+
+    # schedules
+    def put_schedule(self, entry: dict):
+        with self._lock:
+            entry = dict(entry)
+            entry.setdefault("id", uuid.uuid4().hex[:8])
+            items = self._data["schedules"]
+            for i, existing in enumerate(items):
+                if existing["id"] == entry["id"]:
+                    entry.setdefault("last_fired", existing.get("last_fired"))
+                    items[i] = entry
+                    break
+            else:
+                items.append(entry)
+            self._save()
+            return copy.deepcopy(entry)
+
+    def delete_schedule(self, sid):
+        with self._lock:
+            self._data["schedules"] = [s for s in self._data["schedules"] if s["id"] != sid]
+            self._save()
+
+    def mark_fired(self, sid, stamp):
+        with self._lock:
+            for s in self._data["schedules"]:
+                if s["id"] == sid:
+                    s["last_fired"] = stamp
+            self._save()
