@@ -120,7 +120,7 @@ The task it creates:
 | Stopping on purpose | `Disable-ScheduledTask -TaskName HomeControl`, then end the task. Otherwise the minute repeat starts it again. `Enable-ScheduledTask` and `Start-ScheduledTask` bring it back. |
 | Priority | below normal |
 | Time limit | none |
-| Log | `APP\logs\home-control.log` (1 MB × 3). IP addresses are masked in everything written to it, error reports included. |
+| Log | `APP\logs\home-control.log` (1 MB × 3). IP addresses are masked in everything written to it, error reports included. It rotates while the app runs. If another program holds it open (an editor, `Get-Content -Wait`), rotation waits and is tried again later; read it with `Get-Content -Tail 50` or `Select-String`, which open and close it. |
 | Execution policy | `-ExecutionPolicy Bypass` applies to this one script run only; the machine's policy isn't changed. The scripts haven't been run yet; read them first. |
 
 Undo: `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1`. Code, data and secrets are left as they are.

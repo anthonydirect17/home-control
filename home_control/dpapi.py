@@ -1,9 +1,11 @@
 """Windows DPAPI: encrypt bytes so only the same Windows account can decrypt them.
 
 Uses CryptProtectData and CryptUnprotectData from crypt32.dll through ctypes,
-with no extra package. The scope is the current user (not the machine), and an
-app-specific entropy value is mixed in, so another program running as the same
-account can't decrypt the values by calling DPAPI without it.
+with no extra package. The scope is the current user (not the machine): only
+that Windows account can decrypt the values. Any program running as that same
+account can decrypt them too. The app-specific entropy value is in this public
+repo, so it is no barrier to such a program; it only keeps Home Control's values
+apart from other apps' DPAPI data by accident.
 
 `libs` lets tests pass stand-ins for crypt32 and kernel32; the app never sets it.
 """

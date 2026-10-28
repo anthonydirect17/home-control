@@ -346,3 +346,75 @@ def test_default_port_never_collides_with_the_trading_desk(monkeypatch, tmp_path
     monkeypatch.setattr(sys, "argv", ["home_control", "--data", str(tmp_path)])
     cli.main()
     assert seen["port"] == 8780
+
+
+def _log_test_setup(monkeypatch, tmp_path, max_bytes=200, retry_bytes=300):
+    """A held-open log: os.replace on it fails until `held["on"]` is turned off."""
+    from home_control import __main__ as cli
+    monkeypatch.setattr(cli, "LOG_MAX_BYTES", max_bytes)
+    monkeypatch.setattr(cli, "LOG_RETRY_BYTES", retry_bytes)
+    held = {"on": True, "tries": 0}
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if held["on"] and "hc.log" in str(src):
+            held["tries"] += 1
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real_replace(src, dst)
+    monkeypatch.setattr(os, "replace", replace)
+    return cli, held
+
+
+def test_log_keeps_writing_when_rotation_fails_and_retries_later(monkeypatch, tmp_path):
+    cli, held = _log_test_setup(monkeypatch, tmp_path)
+    path = tmp_path / "hc.log"
+    stdout, stderr = sys.stdout, sys.stderr
+    try:
+        cli.open_log(str(path))
+        for i in range(10):  # about 500 bytes: past the limit, rotation fails once
+            print(f"line {i:02d} " + "x" * 40)
+        assert held["tries"] == 1  # not on every line: the next try waits for LOG_RETRY_BYTES more
+        held["on"] = False  # the reader lets go
+        for i in range(10, 13):  # the retry point is reached at once: rotates once, then stays small
+            print(f"line {i:02d} " + "x" * 40)
+        sys.stdout.close()
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["hc.log", "hc.log.1"]  # rotated once the file was free
+    text = (tmp_path / "hc.log.1").read_text() + path.read_text()
+    assert all(f"line {i:02d} " in text for i in range(13))  # nothing lost
+    assert "log rotation failed: [Errno 32]" in text
+
+
+def test_log_write_never_raises_even_if_the_file_cannot_be_reopened(monkeypatch, tmp_path):
+    cli, held = _log_test_setup(monkeypatch, tmp_path)
+    path = tmp_path / "hc.log"
+    stdout, stderr = sys.stdout, sys.stderr
+    try:
+        cli.open_log(str(path))
+        log = sys.stdout
+        log._stream.close()  # as if closed under us
+        real_open = open
+        monkeypatch.setattr("builtins.open", lambda *a, **k: (_ for _ in ()).throw(OSError(13, "denied")))
+        print("this line is lost, but print does not raise")
+        monkeypatch.setattr("builtins.open", real_open)
+        print("back again")
+        sys.stdout.close()
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+    assert "back again" in path.read_text()
+
+
+def test_open_log_survives_a_failed_rotation_at_start(monkeypatch, tmp_path):
+    cli, held = _log_test_setup(monkeypatch, tmp_path)
+    path = tmp_path / "hc.log"
+    path.write_text("old " * 100)  # over the limit already
+    stdout, stderr = sys.stdout, sys.stderr
+    try:
+        cli.open_log(str(path))
+        print("still logging")
+        sys.stdout.close()
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+    text = path.read_text()
+    assert "log rotation failed at start" in text and "still logging" in text

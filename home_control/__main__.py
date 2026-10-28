@@ -28,6 +28,7 @@ import webbrowser
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_MAX_BYTES = 1_000_000
 LOG_KEEP = 3
+LOG_RETRY_BYTES = 100_000  # after a failed rotation, write this much more before trying again
 RESTART_DELAY = 60
 
 
@@ -86,26 +87,69 @@ class MaskedLog:
 
     It rotates once it passes LOG_MAX_BYTES, so an app that runs for weeks keeps at most
     LOG_KEEP old files plus the current one.
+
+    Writing never raises: a log problem must not stop the thread that prints. On Windows a
+    rename fails while another program holds the file open without delete sharing (a reader
+    tailing it, say). Then the same file is reopened, writing goes on, and the rotation is
+    tried again after another LOG_RETRY_BYTES.
     """
 
     def __init__(self, path):
         self.path = path
         self._lock = threading.Lock()
-        self._stream = open(path, "a", encoding="utf-8", buffering=1)
-        self._size = os.path.getsize(path)
+        self._stream = None
+        self._open()
+        self._size = os.path.getsize(path) if os.path.exists(path) else 0
+        self._next_try = LOG_MAX_BYTES
+
+    def _open(self):
+        try:
+            self._stream = open(self.path, "a", encoding="utf-8", buffering=1)
+        except OSError:
+            self._stream = None  # tried again at the next write
+
+    def _roll(self):
+        """Rotate; on failure, keep the current file and note why in it."""
+        self._stream.close()
+        try:
+            _rotate(self.path)
+        except OSError as e:
+            self._open()
+            self._next_try = self._size + LOG_RETRY_BYTES
+            if self._stream:
+                self._stream.write(f"(log rotation failed: {e}; writing on, trying again later)\n")
+            return
+        self._open()
+        self._size = 0
+        self._next_try = LOG_MAX_BYTES
 
     def write(self, text):
         from .netaddr import mask_addresses
         masked = mask_addresses(text)
         with self._lock:
-            self._stream.write(masked)
-            self._size += len(masked.encode("utf-8", errors="replace"))
-            if self._size > LOG_MAX_BYTES and masked.endswith("\n"):
-                self._stream.close()
-                _rotate(self.path)
-                self._stream = open(self.path, "a", encoding="utf-8", buffering=1)
-                self._size = 0
+            try:
+                if self._stream is None or self._stream.closed:
+                    self._open()
+                if self._stream is None:
+                    return len(text)  # the line is lost, but the caller carries on
+                self._stream.write(masked)
+                self._size += len(masked.encode("utf-8", errors="replace"))
+                if self._size > max(LOG_MAX_BYTES, self._next_try) and masked.endswith("\n"):
+                    self._roll()
+            except (OSError, ValueError):
+                pass  # ValueError: a write to a stream closed elsewhere
         return len(text)
+
+    def flush(self):
+        with self._lock:
+            try:
+                if self._stream and not self._stream.closed:
+                    self._stream.flush()
+            except (OSError, ValueError):
+                pass
+
+    def isatty(self):
+        return False  # asked by logging set-ups; answered even while the file is being reopened
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -116,11 +160,17 @@ def open_log(path):
 
     Addresses are masked in everything written, tracebacks included."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    rotate_error = None
     if os.path.exists(path) and os.path.getsize(path) > LOG_MAX_BYTES:
-        _rotate(path)
+        try:
+            _rotate(path)
+        except OSError as e:  # e.g. the file is held open; the running log tries again later
+            rotate_error = e
     log = MaskedLog(path)
     sys.stdout = sys.stderr = log
     print(f"--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+    if rotate_error:
+        print(f"(log rotation failed at start: {rotate_error}; writing on, trying again later)")
 
 
 def encrypt_old_secrets(settings):
