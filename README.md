@@ -28,6 +28,8 @@ Requires Windows and Python 3.10 or newer. In Command Prompt, from this folder:
 python -m pip install -r requirements.txt
 ```
 
+Every dependency is pinned to an exact version. Only for the optional Govee Desktop connection (multi-segment effects), also run `python -m pip install -r requirements-desktop.txt`.
+
 Try it with pretend lights first:
 
 ```
