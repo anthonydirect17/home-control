@@ -6,13 +6,14 @@
     python -m home_control --set-govee-key    save your Govee API key
     python -m home_control --set-guid         save the Govee Desktop API GUID (optional)
     python -m home_control --ring-login       sign in to Ring (email, hidden password, two-step code)
+    python -m home_control --check-secrets    list saved secrets and whether each is encrypted (names only)
     python -m home_control --secrets-store credential-manager
                                               keep secrets in Windows Credential Manager instead
                                               of data/secrets.json (see secrets.py)
 
 Secrets go into the active secrets store: by default data/secrets.json in the
-app's own data folder, locked to the account running the app. Typing is
-always hidden.
+app's own data folder, locked to the account running the app and, on Windows,
+encrypted with DPAPI for that account. Typing is always hidden.
 """
 
 import argparse
@@ -71,15 +72,39 @@ def set_secrets_store(store, choice):
     return 0
 
 
-class MaskedLog:
-    """A log file that keeps IP addresses out: everything written passes through mask_addresses()."""
+def _rotate(path):
+    """hc.log -> hc.log.1 -> hc.log.2 -> hc.log.3; the oldest is dropped."""
+    for i in range(LOG_KEEP - 1, 0, -1):
+        if os.path.exists(f"{path}.{i}"):
+            os.replace(f"{path}.{i}", f"{path}.{i + 1}")
+    if os.path.exists(path):
+        os.replace(path, f"{path}.1")
 
-    def __init__(self, stream):
-        self._stream = stream
+
+class MaskedLog:
+    """The log file: IP addresses are masked in everything written, and it rotates while running.
+
+    It rotates once it passes LOG_MAX_BYTES, so an app that runs for weeks keeps at most
+    LOG_KEEP old files plus the current one.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._stream = open(path, "a", encoding="utf-8", buffering=1)
+        self._size = os.path.getsize(path)
 
     def write(self, text):
         from .netaddr import mask_addresses
-        self._stream.write(mask_addresses(text))
+        masked = mask_addresses(text)
+        with self._lock:
+            self._stream.write(masked)
+            self._size += len(masked.encode("utf-8", errors="replace"))
+            if self._size > LOG_MAX_BYTES and masked.endswith("\n"):
+                self._stream.close()
+                _rotate(self.path)
+                self._stream = open(self.path, "a", encoding="utf-8", buffering=1)
+                self._size = 0
         return len(text)
 
     def __getattr__(self, name):
@@ -92,13 +117,35 @@ def open_log(path):
     Addresses are masked in everything written, tracebacks included."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if os.path.exists(path) and os.path.getsize(path) > LOG_MAX_BYTES:
-        for i in range(LOG_KEEP - 1, 0, -1):
-            if os.path.exists(f"{path}.{i}"):
-                os.replace(f"{path}.{i}", f"{path}.{i + 1}")
-        os.replace(path, f"{path}.1")
-    log = MaskedLog(open(path, "a", encoding="utf-8", buffering=1))
+        _rotate(path)
+    log = MaskedLog(path)
     sys.stdout = sys.stderr = log
     print(f"--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+
+
+def encrypt_old_secrets(settings):
+    """At start: encrypt any plain value left in data/secrets.json. Logs names only."""
+    from .secrets import STORE_FILE, encrypt_saved_secrets, secrets_store
+    if secrets_store(settings) != STORE_FILE:
+        return
+    try:
+        names = encrypt_saved_secrets()
+    except OSError as e:
+        print(f"Couldn't encrypt the saved secrets: {e}. They stay as they were; "
+              "python -m home_control --check-secrets shows which.")
+        return
+    if names:
+        print(f"Encrypted {len(names)} saved secret(s) with Windows DPAPI: {', '.join(names)}")
+
+
+def check_secrets(settings):
+    from .secrets import report_is_ok, secrets_file, secrets_report, secrets_store
+    store = secrets_store(settings)
+    print(f"Secrets store: {store}" + (f" ({secrets_file()})" if store == "file" else ""))
+    rows = secrets_report(settings)
+    for name, state in rows:
+        print(f"  {name}: {state}")
+    return 0 if report_is_ok(rows) else 1
 
 
 def build_backends(store, args):
@@ -155,13 +202,13 @@ def build_gate(store, demo):
     from .auth import PinGate, load_or_create_session_key
     from .secrets import get_secret, save_secret_value
     settings = store.get("settings")
-    pin_hash, _ = get_secret("page-pin-hash", settings)
+    pin_hash, where = get_secret("page-pin-hash", settings)
     key, saved = load_or_create_session_key(get_secret, save_secret_value, settings)
     if not saved:
         print("Couldn't save the cookie key; devices will need the PIN again after a restart.")
     gate = PinGate(pin_hash, key, required=not demo)
     if not gate.pin_set:
-        print("No page PIN is set; the page stays locked until you run: python -m home_control --set-pin"
+        print(f"No page PIN ({where}); the page stays locked until you run: python -m home_control --set-pin"
               if gate.required else "Demo mode with no PIN set: the page is open.")
     return gate
 
@@ -182,6 +229,8 @@ def main():
     parser.add_argument("--set-guid", action="store_true", help="save the Govee Desktop API GUID and exit")
     parser.add_argument("--set-govee-key", action="store_true", help="save the Govee API key and exit")
     parser.add_argument("--ring-login", action="store_true", help="sign in to Ring and exit")
+    parser.add_argument("--check-secrets", action="store_true",
+                        help="list saved secrets and whether each is encrypted (names only), then exit")
     parser.add_argument("--secrets-store", choices=["credential-manager", "file"],
                         help="choose where secrets are kept, then exit")
     args = parser.parse_args()
@@ -193,6 +242,8 @@ def main():
 
     if args.secrets_store:
         return set_secrets_store(store, args.secrets_store)
+    if args.check_secrets:
+        return check_secrets(store.get("settings"))
     if args.set_pin:
         return set_pin(store.get("settings"))
     if args.set_guid:
@@ -207,6 +258,7 @@ def main():
 
     if args.log_file:
         open_log(args.log_file)
+    encrypt_old_secrets(store.get("settings"))
     if not args.keep_running:
         try:
             return serve(args, store)

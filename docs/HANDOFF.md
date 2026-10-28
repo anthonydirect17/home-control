@@ -52,7 +52,7 @@ One control center for the house, running on an always-on home server and opened
 | **Alexa through the same Node helper** using `alexa-remote2` | No official API lets a home app make an Echo speak. `alexa-remote2` is the unofficial library used by Node-RED and ioBroker. |
 | **Sonos through Python `soco`** (local network) | Sonos is controlled locally, so it's reliable and fast. |
 | **Govee: LAN API first, cloud API second, Govee Desktop optional** | LAN is fast and reports state. Cloud reaches every light and runs scenes. Govee Desktop is only needed for per-segment effects, and requires running as admin. |
-| **Public GitHub repo; secrets never in it** | Owner's choice. Personal data and keys live in the app's git-ignored `data/` folder. Keys go in `data/secrets.json`, locked to the account running the app (Credential Manager is an option). |
+| **Public GitHub repo; secrets never in it** | Owner's choice. Personal data and keys live in the app's git-ignored `data/` folder. Keys go in `data/secrets.json`, locked to the account running the app and DPAPI-encrypted on Windows (Credential Manager is an option). No secret is ever in plain text on disk (owner, 2026-10-28). |
 | **Page reachable over Tailscale only** | The owner wants to reach it from their own devices anywhere. It binds to the server's Tailscale address, looked up at start. It is protected by the 6-digit page PIN, and is never exposed beyond Tailscale. |
 
 ## 3. What exists today (`main` branch)
@@ -65,7 +65,8 @@ home_control/
   patterns.py        effect patterns: solid, breathe, color cycle, chase, rainbow, twinkle, candy cane, christmas
   scheduler.py, sun.py   timers incl. sunrise/sunset (low priority)
   store.py           data/settings.json: settings, groups, presets, schedules, aliases, lan_cache
-  secrets.py         data/secrets.json (default, locked to the account) / Credential Manager / env vars
+  secrets.py         data/secrets.json (default, locked to the account, DPAPI-encrypted) / Credential Manager / env vars
+  dpapi.py           Windows DPAPI through ctypes (CryptProtectData / CryptUnprotectData)
   server.py          JSON API + serves static/ (the page)
   govee/lan.py       Govee LAN API (UDP 4001 multicast scan, 4002 replies, 4003 commands)
   govee/cloud.py     Govee cloud API v1 router (openapi.api.govee.com)
@@ -104,7 +105,7 @@ tests/               59 tests: pretend lights, pretend LAN light over real UDP, 
 
 **The steps themselves** are in **[WINDOWS_SERVER_SETUP.md](WINDOWS_SERVER_SETUP.md)**:
 - software, code and venv
-- secrets in `data\secrets.json`, locked to the account
+- secrets in `data\secrets.json`, locked to the account and DPAPI-encrypted (`--check-secrets` lists names and state only)
 - the PIN
 - firewall rules scoped by port and remote address: TCP 8780 from the Tailscale range, UDP 4002 from the LAN
 - the hidden `HomeControl` task in the signed-in session, with `--host tailscale` and `--keep-running`

@@ -242,7 +242,7 @@ def test_icacls_leaves_only_this_account():
         ["icacls", r"C:\x\s.json", "/inheritance:r", "/grant:r", f"*{sid}:F"]]
 
 
-def test_windows_file_store_round_trip_and_lockdown(monkeypatch, tmp_path):
+def test_windows_file_store_round_trip_and_lockdown(monkeypatch, tmp_path, fake_dpapi):
     """Simulates Windows: the data-folder file is the default, and every write locks the file down."""
     monkeypatch.setattr(sys, "platform", "win32")
     secrets.set_data_dir(str(tmp_path / "data"))
@@ -267,7 +267,7 @@ def test_windows_file_store_round_trip_and_lockdown(monkeypatch, tmp_path):
     assert all(kw.get("creationflags", 0) == secrets.NO_WINDOW for _, kw in calls)
 
 
-def test_lockdown_failure_is_reported(monkeypatch, tmp_path):
+def test_lockdown_failure_is_reported(monkeypatch, tmp_path, fake_dpapi):
     monkeypatch.setattr(sys, "platform", "win32")
     secrets.set_data_dir(str(tmp_path / "data"))
     monkeypatch.setattr(secrets, "_current_user_sid", lambda: None)

@@ -59,6 +59,11 @@ Each command asks with hidden typing:
 - The `data\` folder is git-ignored, so they never reach GitHub.
 - Each time it's written, the file is locked so only the account running the app can open it: inherited permissions are removed, then that account alone is granted access.
 - It sits next to the app's own settings, so the app's secrets live in its own folder.
+- **Every value in it is encrypted with Windows DPAPI** for that account (current-user scope, with an app-specific entropy value). On disk each one reads `dpapi:<base64>`. Nothing is ever kept in plain text.
+- A value saved by an older version, before encryption, is encrypted at the next start. The log lists the names, never the values.
+- If a value can't be decrypted (another Windows account, or the account's keys were reset), the app says so and treats it as missing: save it again with the matching `--set-...` or `--ring-login` command.
+
+**Check them:** `.venv\Scripts\python -m home_control --check-secrets` lists each secret's name and whether it is encrypted. It never prints a value. It exits with 1 if anything on disk is not encrypted or can't be decrypted.
 
 **Alternative:** `--secrets-store credential-manager` keeps them in the account's Windows Credential Manager instead. `--secrets-store file` switches back, copying any secrets it finds there and listing names only. Restart the app after switching.
 
