@@ -1,3 +1,3 @@
-"""Home Control: a Windows control center for Govee lights."""
+"""Home Control: a control center for Govee lights and Ring."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

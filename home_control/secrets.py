@@ -27,11 +27,15 @@ SECRETS = {
     # Salted hash of the page PIN (never the PIN itself); see auth.py.
     "page-pin-hash": {"env": "HOME_CONTROL_PIN_HASH", "target": "home-control/page-pin-hash",
                       "label": "page PIN hash"},
+    # Ring's sign-in token. Ring rotates it; the app saves each new one at once.
+    "ring-refresh-token": {"env": "RING_REFRESH_TOKEN", "target": "home-control/ring-refresh-token",
+                           "label": "Ring sign-in token"},
     # Random key that signs the "remember this device" cookies; created automatically.
     "session-key": {"env": "HOME_CONTROL_SESSION_KEY", "target": "home-control/session-key",
                     "label": "cookie signing key"},
 }
-SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin"}
+SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin",
+             "ring-refresh-token": "--ring-login"}
 
 STORE_CREDMAN = "credential-manager"
 STORE_FILE = "file"

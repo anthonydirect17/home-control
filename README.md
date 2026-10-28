@@ -1,6 +1,6 @@
 # Home Control
 
-A control center for your smart home that runs on an always-on Windows PC and opens in your browser. Right now it controls Govee lights. Ring (cameras, doorbell, alarm, sensors), rules ("when this happens, do that") and Alexa/Sonos announcements are next.
+A control center for your smart home that runs on an always-on Windows PC and opens in your browser. It controls Govee lights and Ring (cameras, doorbell, Ring Alarm and its sensors). Rules ("when this happens, do that") and Alexa/Sonos announcements are next.
 
 - **Lights:** on/off, brightness, and color for every Govee light on your account. Lights on your home network also report their real state.
 - **Govee scenes:** run Govee's built-in scenes and your own DIY scenes from the Govee app.
@@ -80,6 +80,29 @@ or `python -m home_control`. To run it on an always-on Windows server (hidden, s
 - **Where the page opens:** the app listens on this PC only (127.0.0.1) unless you start it with `--host`. `--host tailscale` uses the PC's current Tailscale address, so your other devices on Tailscale can open it. The PIN protects the page, but still only expose it on networks you trust.
 - **Govee Desktop and network scanning:** if Govee Desktop is running, it may hold the network port used to find lights. Commands still work, but newly added lights won't be found until Govee Desktop is closed. The app remembers lights it has already found.
 
+## Ring
+
+The Ring tab shows:
+- **Alarm:** the Ring Alarm's mode, with Disarm / Home / Away, and the siren.
+- **Cameras:** snapshots when you ask, floodlights and camera sirens, and recent recorded clips.
+- **Sensors:** every door, window and motion sensor, with battery and tamper status.
+- **Events:** a live feed of motion, doorbell, alarm and sensor events.
+
+**Arming, disarming and any siren ask for the PIN every time**, on top of a confirmation step, even on a remembered device. Home Control never contacts Ring's monitoring center.
+
+It works through a small Node.js helper in `ring-bridge/`, using `ring-client-api` 14.3.0 and needing Node 20, 22 or 24. The helper listens only on 127.0.0.1 (port 8782). Set it up once:
+
+```
+cd ring-bridge
+npm ci --ignore-scripts
+cd ..
+python -m home_control --ring-login
+```
+
+- **`npm ci --ignore-scripts`** installs exactly the versions in `package-lock.json`. It skips the optional ffmpeg download, which isn't needed.
+- **`--ring-login`** asks for your Ring email, password (hidden) and two-step code in your own terminal. It saves only Ring's sign-in token, in the secrets store. Ring rotates that token, and the app saves each new one at once.
+- **In the Ring app,** this shows up in Control Center as "Home Control".
+
 ## What stays off GitHub
 
 This repository is public. Everything personal lives in `data/`, which `.gitignore` excludes:
@@ -107,7 +130,6 @@ The tests run against pretend lights, a pretend LAN light and a pretend Govee cl
 
 ## Planned
 
-- Ring: cameras, doorbell, alarm, sensors, snapshots and recorded clips
 - Rules: "when this happens, do that" across Ring, lights and the alarm
 - Alexa and Sonos: custom announcements, and sounding the alarm on every speaker
 - Google devices (Nest speakers, cameras), when you have them

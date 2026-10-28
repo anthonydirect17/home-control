@@ -1,6 +1,12 @@
-# Home Control: handoff brief for the home-server session
+# Home Control: handoff brief
 
-This document carries the whole project to the Claude session running on the always-on home server. Read all of it before changing anything.
+This document carries the whole project to any Claude session that works on Home Control. Read all of it before changing anything.
+
+**Before any work:** read the owner's chain of command and server notes. They live in the owner's private shared folder, not in this public repo, and they win over this file:
+- `CHAIN_OF_COMMAND.md`: who decides what. A Home Control session leads its own project only. Anything on the server goes to the server's coordinator as a request card. Trading or cross-project questions go to the lead coordinator. The owner gives every GO.
+- The server's onboarding guide and box rules.
+
+**This session never changes the server itself.** It writes code, tests and docs, plus request cards for the server's coordinator.
 
 **The owner prefers questions over guesses.** When something here doesn't match what you find on the machine, or a decision isn't covered, ask.
 
@@ -27,7 +33,16 @@ One control center for the house, running on an always-on home server and opened
 
 ## 2. Decisions already made, and why
 
-**Port:** the page uses **8780** by default. **Never use 8765**: it belongs to the owner's trading desk. Where Home Control and the trading desk conflict on anything, Home Control yields.
+**On the server, in short** (the owner's private notes have the detail):
+
+| Topic | Rule |
+|---|---|
+| Account | Home Control runs **in the owner's own Windows account**. There is no separate app account. |
+| Folder | `C:\Apps\HomeControl\`: the clone, `.venv`, `data\` and `logs\`. Nothing for the app lives anywhere else. |
+| Startup task | `HomeControl` (exact name). It starts at the owner's sign-in and **runs in that signed-in session** (Interactive, Limited, hidden). The machine signs in automatically after a restart and then locks. |
+| Tailscale address | **Read at every start** (`--host tailscale`), **never hard-coded**. The server's address has already changed once. Nothing in the code, settings, docs or cards may contain it. |
+| Ports | The block **8780 to 8789**: 8780 the page (Tailscale only); 8781 the Sonos sound files (home LAN, phase 4); 8782 to 8789 internal helpers on 127.0.0.1 (the Ring helper uses 8782). Inbound UDP 4002 from the home LAN for Govee. **Never 8765**: it belongs to the owner's trading desk. |
+| Priority | Where Home Control and the trading desk conflict on anything, Home Control yields. |
 
 | Decision | Reason |
 |---|---|
@@ -38,7 +53,7 @@ One control center for the house, running on an always-on home server and opened
 | **Sonos through Python `soco`** (local network) | Sonos is controlled locally, so it's reliable and fast. |
 | **Govee: LAN API first, cloud API second, Govee Desktop optional** | LAN is fast and reports state. Cloud reaches every light and runs scenes. Govee Desktop is only needed for per-segment effects, and requires running as admin. |
 | **Public GitHub repo; secrets never in it** | Owner's choice. Personal data and keys live in the app's git-ignored `data/` folder. Keys go in `data/secrets.json`, locked to the account running the app (Credential Manager is an option). |
-| **Page reachable over Tailscale** | The owner wants to reach it from anywhere. Bind to the server's Tailscale address. The page has no login yet, so never expose it beyond Tailscale. |
+| **Page reachable over Tailscale only** | The owner wants to reach it from their own devices anywhere. It binds to the server's Tailscale address, looked up at start. It is protected by the 6-digit page PIN, and is never exposed beyond Tailscale. |
 
 ## 3. What exists today (`main` branch)
 
@@ -113,6 +128,17 @@ With the owner watching the lights:
 8. Report to the owner in plain language. Then add an `Effects speed` recommendation based on how the lights coped at 4 updates per second.
 
 ## 6. Phase 2: Ring connector (Node.js helper)
+
+**Status: built and tested without Ring hardware (version 0.4).** What's in the code:
+- the helper: `ring-bridge/bridge.mjs` and `lib.mjs`, sign-in in `login.mjs`, with Node tests
+- the Python side: `home_control/ring.py`, plus `/api/ring/*` in `server.py`
+- the page's Ring tab
+- `--ring-login`
+- tests with a fake helper over the real stdin/stdout/HTTP protocol
+
+**Not yet done:** a real sign-in and a check against the owner's Ring devices. Doing that needs its own request card: install with `npm ci --ignore-scripts` in `ring-bridge`, then the owner runs `--ring-login`.
+
+The design below is what was built.
 
 Library: **`ring-client-api` 14.3.0** (Node `^20 || ^22 || ^24`). The facts below were checked against its published type definitions.
 
@@ -341,10 +367,14 @@ Only needed if Govee Desktop is used. This summarizes Govee's "Govee Desktop Ope
   | 4000 | no reply (often still worked) |
   | 4001 | send failed |
 
-## 12. Questions to ask the owner at the start
+## 12. Questions still open with the owner
 
-1. Which OS is the server running, and is it wired to the same network as the lights, Echos and Sonos?
-2. What is the server's Tailscale name or address? Should the page be reachable only over Tailscale, or also at the server's own screen?
-3. Phase 1 results first, or go straight to Ring?
-4. For the alarm-on-speakers feature: which speakers, what sound (siren tone or spoken), how loud, and should it stop when the alarm is disarmed?
-5. What should announcements say, in which rooms, and with what quiet hours?
+Already settled:
+- the server is Windows, on the home network;
+- the page is Tailscale only;
+- Phase 1 (Govee on the real lights) comes first.
+
+Still to ask before phase 4:
+1. **Alarm on the speakers:** a siren tone or spoken words? How loud? Should it stop when the alarm is disarmed?
+2. **Announcements:** what should they say, in which rooms, with what quiet hours, and which cameras matter?
+3. **Network:** are the lights, Echos and Sonos on the same network as the server (not a guest or IoT network)?

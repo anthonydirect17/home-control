@@ -7,6 +7,7 @@ Everything under /api/ needs a remembered device (the page PIN), except
 import os
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 from . import __version__, patterns, scheduler as sched
 from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
+from .ring import RingError
 
 # Settings the page may change. Others (secrets store, DLL path, credential
 # names) are only set from the command line on the server itself.
@@ -81,6 +83,19 @@ class PinBody(BaseModel):
     pin: str = ""
 
 
+class OnBody(BaseModel):
+    on: bool
+
+
+class OnPinBody(OnBody):
+    pin: str = ""
+
+
+class ModeBody(BaseModel):
+    mode: str  # "none" (disarmed), "some" (home) or "all" (away)
+    pin: str = ""
+
+
 class ScheduleBody(BaseModel):
     id: Optional[str] = None
     name: str
@@ -103,9 +118,17 @@ def confirm_with_pin(gate, pin):
         raise HTTPException(429 if e.locked_for else 403, str(e))
 
 
-def create_app(controller, store, scheduler, gate, started_at=None):
+def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
+
+    def ring_call(method, *args):
+        if ring is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        try:
+            return getattr(ring, method)(*args)
+        except RingError as e:
+            raise HTTPException(502, str(e))
 
     @app.middleware("http")
     async def require_pin(request: Request, call_next):
@@ -118,13 +141,15 @@ def create_app(controller, store, scheduler, gate, started_at=None):
     @app.get("/api/health")
     def health():
         st = controller.status()
+        connections = {route: {"label": b["label"], "up": bool(b["connected"])} for route, b in st["backends"].items()}
+        if ring is not None:
+            connections["ring"] = {"label": ring.status["label"], "up": bool(ring.status["connected"])}
         return {
             "app": "home-control",
             "version": __version__,
             "started_at": iso(started_at),
             "uptime_seconds": int(time.time() - started_at),
-            "connections": {route: {"label": b["label"], "up": bool(b["connected"])}
-                            for route, b in st["backends"].items()},
+            "connections": connections,
             "light_count": st["device_count"],
             "effects_running": controller.effects_running(),
             "last_event_at": iso(controller.last_activity),
@@ -340,6 +365,60 @@ def create_app(controller, store, scheduler, gate, started_at=None):
                 except (TypeError, ValueError):
                     raise HTTPException(400, f"{key} must be a number")
         return store.update_settings(body)
+
+    # ---------- Ring ----------
+    # Arming, disarming and any siren need the PIN on every request (confirm_with_pin),
+    # even from a remembered device. Nothing here can contact Ring's monitoring center.
+
+    @app.get("/api/ring/status")
+    def ring_status():
+        if ring is None:
+            return {"label": "Ring", "connected": False, "signed_in": False, "error": "Ring isn't set up on this server"}
+        return dict(ring.status)
+
+    @app.get("/api/ring/devices")
+    def ring_devices():
+        return ring_call("get_json", "/devices")
+
+    @app.get("/api/ring/events")
+    def ring_events(limit: int = 50):
+        return bus.recent(source="ring", limit=max(1, min(200, limit))) if bus else []
+
+    @app.get("/api/ring/cameras/{cid}/snapshot")
+    def ring_snapshot(cid: str):
+        content_type, data = ring_call("request", "GET", f"/cameras/{quote(cid, safe='')}/snapshot")
+        return Response(content=data, media_type=content_type or "image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/ring/cameras/{cid}/history")
+    def ring_history(cid: str, limit: int = 20):
+        return ring_call("get_json", f"/cameras/{quote(cid, safe='')}/events?limit={max(1, min(50, limit))}")
+
+    @app.get("/api/ring/cameras/{cid}/recording/{ding}")
+    def ring_recording(cid: str, ding: str):
+        if not ding.isdigit():
+            raise HTTPException(400, "bad recording id")
+        return ring_call("get_json", f"/cameras/{quote(cid, safe='')}/recording/{ding}")
+
+    @app.post("/api/ring/cameras/{cid}/light")
+    def ring_light(cid: str, body: OnBody):
+        return ring_call("post", f"/cameras/{quote(cid, safe='')}/light", {"on": body.on})
+
+    @app.post("/api/ring/cameras/{cid}/siren")
+    def ring_camera_siren(cid: str, body: OnPinBody):
+        confirm_with_pin(gate, body.pin)
+        return ring_call("post", f"/cameras/{quote(cid, safe='')}/siren", {"on": body.on})
+
+    @app.post("/api/ring/locations/{lid}/mode")
+    def ring_mode(lid: str, body: ModeBody):
+        if body.mode not in ("none", "some", "all"):
+            raise HTTPException(400, "mode must be none (disarmed), some (home) or all (away)")
+        confirm_with_pin(gate, body.pin)
+        return ring_call("post", f"/locations/{quote(lid, safe='')}/mode", {"mode": body.mode})
+
+    @app.post("/api/ring/locations/{lid}/siren")
+    def ring_location_siren(lid: str, body: OnPinBody):
+        confirm_with_pin(gate, body.pin)
+        return ring_call("post", f"/locations/{quote(lid, safe='')}/siren", {"on": body.on})
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

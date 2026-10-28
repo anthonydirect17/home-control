@@ -1,0 +1,16 @@
+{
+  "name": "home-control-ring-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Home Control's Ring helper: talks to Ring through ring-client-api and to the Python app over stdin/stdout and a 127.0.0.1 HTTP port.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ring-client-api": "14.3.0"
+  }
+}

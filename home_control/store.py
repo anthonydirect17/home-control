@@ -20,6 +20,8 @@ DEFAULTS = {
         "default_fps": 4,
         "use_govee_desktop": True,
         "secrets_store": "file",  # data/secrets.json (default) or "credential-manager"; see secrets.py
+        "node_path": "node",       # for the Ring helper
+        "ring_helper_port": 8782,  # 127.0.0.1 only
     },
     "groups": {},      # name -> {"members": [device names], "mode": "span" | "mirror"}
     "presets": {},     # name -> {"pattern": str, "params": dict}
