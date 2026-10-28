@@ -1,31 +1,32 @@
 # Running Home Control on an always-on Windows server
 
-This covers installing Home Control on a Windows PC that stays on. It runs with nobody signed in, with no visible windows, and only the owner's devices on Tailscale can reach the page. The steps are generic. Anything specific to your machine goes in the placeholders:
+This covers installing Home Control on a Windows PC that stays on. It assumes this setup:
+- the owner's Windows account signs in automatically after every restart, then locks itself
+- Home Control runs **in that signed-in session**, hidden, from its own folder
+- the page is reachable only over Tailscale
+
+If someone else manages the machine (a server session or an admin), they carry out the steps marked **(server)**. Give them the exact commands, plus the undo commands listed with each step.
 
 | Placeholder | Meaning |
 |---|---|
-| `APPUSER` | the Windows account the app runs under; a dedicated **standard** account is best |
-| `C:\Users\APPUSER\home-control` | where the repo is cloned (`REPO` below) |
-| `TAILSCALE_IP` | the server's current Tailscale address (`100.x.y.z`), only for opening the page from another device; nothing is configured with it |
-| `PORT` | the port for the page |
+| `C:\Apps\HomeControl` | the app's folder: the git clone, its `.venv`, and the git-ignored `data\` and `logs\` (`APP` below) |
+| `PORT` | the page's port (default 8780) |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
 
-Steps marked **(admin)** need an administrator. If someone else manages the machine, give them the exact commands, plus the undo commands listed with each step.
-
-## 1. Software (admin, once)
+## 1. Software (server, once)
 
 - **Python 3.12, installed for all users.**
 - **Node.js 24 LTS.** Used from phase 2 on (the Ring and Alexa helper). `ring-client-api` supports Node 20, 22 and 24.
 - **Git for Windows.**
-- **The app account** needs the **"Log on as a batch job"** right (Local Security Policy → Local Policies → User Rights Assignment). Without it, the auto-start task can't run with nobody signed in.
+- **The folder:** create `C:\Apps\HomeControl\` for the owner's account.
 
-No global `pip install` and no global `npm install`. Everything the app needs goes into its own venv, and later into its own `node_modules`.
+No global `pip install` and no global `npm install`. Everything the app needs goes into its own `.venv`, and later into its own `node_modules`.
 
-## 2. Code and venv (as APPUSER)
+## 2. Code and venv
 
 ```
-git clone https://github.com/anthonydirect17/home-control C:\Users\APPUSER\home-control
-cd C:\Users\APPUSER\home-control
+git clone https://github.com/anthonydirect17/home-control C:\Apps\HomeControl
+cd C:\Apps\HomeControl
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt
@@ -42,27 +43,24 @@ Quick check with pretend lights, on this PC only:
 
 The browser opens to four pretend lights. Stop it with Ctrl+C.
 
-## 3. Secrets (as APPUSER, typed by the owner)
+## 3. Secrets (typed by the owner)
 
-Each command asks with hidden typing and saves into the active secrets store. Nothing is ever written to the repo.
+Each command asks with hidden typing:
 
 ```
 .venv\Scripts\python -m home_control --set-pin
 .venv\Scripts\python -m home_control --set-govee-key
 ```
 
-- `--set-pin`: the page PIN, **exactly 6 digits**. Only a salted hash is stored.
-- `--set-govee-key`: the Govee API key.
+- `--set-pin` sets the page PIN: **exactly 6 digits**, stored only as a salted hash.
+- `--set-govee-key` stores the Govee API key.
 
-**Where secrets live:**
-- **Default:** Windows Credential Manager for `APPUSER`, under entries named `home-control/...`.
-- **Fallback:** `%LOCALAPPDATA%\home-control\secrets.json`. Its folder and file are locked so only `APPUSER` can open them (inherited permissions removed). It's only used after you switch it on:
-  ```
-  .venv\Scripts\python -m home_control --secrets-store file
-  ```
-  - Switching copies every secret already in Credential Manager into the file, listing names only.
-  - Switch back with `--secrets-store credential-manager`.
-  - Restart the app after switching.
+**Where they go:** `APP\data\secrets.json`.
+- The `data\` folder is git-ignored, so they never reach GitHub.
+- Each time it's written, the file is locked so only the account running the app can open it: inherited permissions are removed, then that account alone is granted access.
+- It sits next to the app's own settings, so the app's secrets live in its own folder.
+
+**Alternative:** `--secrets-store credential-manager` keeps them in the account's Windows Credential Manager instead. `--secrets-store file` switches back, copying any secrets it finds there and listing names only. Restart the app after switching.
 
 **About the page PIN:**
 - **Device memory:** a device that enters the PIN is remembered for 30 days.
@@ -70,13 +68,12 @@ Each command asks with hidden typing and saves into the active secrets store. No
 - **Changing the PIN** signs every device out.
 - **Arming, disarming and sirens** (phase 2) ask for the PIN every time, on top of a confirmation step.
 
-## 4. Firewall (admin)
+## 4. Firewall (server)
 
-Scope every rule by **port and remote address**, never by program.
+Scope every rule by **port and remote address**, never by program. Don't tie a rule to the server's own Tailscale address, which can change.
 
 ```powershell
-# The page: only from Tailscale addresses. Not tied to the server's own Tailscale
-# address, so it keeps working if that address ever changes.
+# The page: only from Tailscale addresses.
 New-NetFirewallRule -DisplayName "Home Control page (Tailscale)" -Direction Inbound -Protocol TCP `
   -LocalPort PORT -RemoteAddress 100.64.0.0/10 -Action Allow -Profile Any
 
@@ -95,38 +92,41 @@ Remove-NetFirewallRule -DisplayName "Home Control Govee LAN"
 
 Also limit the page port to your own devices in Tailscale's access rules (admin console).
 
-## 5. Auto-start, hidden (admin)
+## 5. Auto-start, hidden (server)
 
 ```powershell
-cd C:\Users\APPUSER\home-control\scripts\windows
-powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -User APPUSER -Repo C:\Users\APPUSER\home-control -BindAddress tailscale -Port PORT
+cd C:\Apps\HomeControl\scripts\windows
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1
 Start-ScheduledTask -TaskName HomeControl
 ```
 
-The script asks for APPUSER's password in a hidden prompt; Task Scheduler stores it. The task it creates:
+The defaults are the owner's account (the one running the command), `C:\Apps\HomeControl`, `--host tailscale` and port 8780. Override them with `-User`, `-Repo`, `-BindAddress` and `-Port`.
+
+The task it creates:
 
 | Setting | Value |
 |---|---|
-| Trigger | "At startup" |
-| Runs | whether anyone is signed in or not, with the password stored. Not "Do not store password", which may cut off Credential Manager. |
-| Execution policy | `-ExecutionPolicy Bypass` applies to this one script run only; the machine's policy isn't changed. The scripts haven't been run yet; read them first. |
+| Name | `HomeControl`. Keep this name: ServerWatch's restart button looks for it. |
+| Trigger | when the owner's account signs in, which happens automatically after a restart |
+| Runs | in that signed-in session (logon type Interactive, run level Limited). No password is stored, and saved logins are readable. |
 | Window | none: it runs `.venv\Scripts\pythonw.exe` |
-| Crash recovery | the app restarts itself 60 s after any crash (`--keep-running`). Task Scheduler also retries every minute if the task itself fails. |
+| Address | `--host tailscale`: the machine's current Tailscale address, looked up at every start |
+| Crash recovery | the app restarts itself 60 s after any crash, and retries every minute until Tailscale is up after boot. Task Scheduler also retries every minute if the task itself fails. |
 | Priority | below normal |
 | Time limit | none |
-| Log | `REPO\data\logs\home-control.log` (1 MB × 3) |
+| Log | `APP\logs\home-control.log` (1 MB × 3). It doesn't record the Tailscale address. |
+| Execution policy | `-ExecutionPolicy Bypass` applies to this one script run only; the machine's policy isn't changed. The scripts haven't been run yet; read them first. |
 
 Undo: `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1`. Code, data and secrets are left as they are.
 
-## 6. The nobody-signed-in test (required)
+## 6. The restart test (required)
 
-1. Reboot the server and **leave it at the sign-in screen**.
-2. From another device on Tailscale, open `http://TAILSCALE_IP:PORT/api/health`. It should show the `lan` and `cloud` connections with `"up": true`, and a growing `uptime_seconds`.
+1. Restart the PC and don't touch it. It should sign in by itself and lock.
+2. From another device on Tailscale, open `http://<server's Tailscale name>:PORT/api/health`. It should show the `lan` and `cloud` connections with `"up": true`, and a growing `uptime_seconds`.
 3. Open the page, enter the PIN, and switch a light.
-4. Read `REPO\data\logs\home-control.log`. It should say `Govee cloud: on (key from Credential Manager (...))`.
-   - If it says the key is `not saved yet` even though you saved it, the account's Credential Manager isn't readable in this mode. Sign in as APPUSER, run `--secrets-store file`, restart the task, and repeat the test.
-5. After phase 2, also confirm a rotated Ring token was saved across a restart.
-6. Kill `pythonw.exe` in Task Manager. The task should start it again within about a minute; check `Get-ScheduledTaskInfo -TaskName HomeControl`. If it doesn't, note it: `--keep-running` covers crashes inside the app, but not the process being killed.
+4. Read `APP\logs\home-control.log`. It should say `Govee cloud: on (key from ...secrets.json)`.
+5. End `pythonw.exe` in Task Manager. The task should start it again within about a minute; check `Get-ScheduledTaskInfo -TaskName HomeControl`. `--keep-running` covers crashes inside the app; this checks that the task covers the process being killed.
+6. After phase 2, also confirm a rotated Ring token was saved across a restart.
 
 ## 7. Health endpoint
 
@@ -142,6 +142,6 @@ It never includes light names, addresses, errors or secrets.
 ## 8. Being a good neighbour on a shared box
 
 - **Priority:** the task runs below normal priority.
-- **Footprint:** keep `data\` small. Logs rotate on their own, and camera snapshots and clips (phase 2) are cached briefly in memory, not kept on disk.
+- **Footprint:** keep `data\` and `logs\` small. Logs rotate on their own, and camera snapshots and clips (phase 2) are cached briefly in memory, not kept on disk.
 - **No visible windows:** any helper process the app starts later (e.g. the Node helper in phase 2) must be started with `CREATE_NO_WINDOW` so no window flashes.
-- **Bind addresses:** the page binds only to the Tailscale address (`--host tailscale` looks it up at every start, so an address change needs no edits). Internal helpers bind only to `127.0.0.1`.
+- **Bind addresses:** the page binds only to the Tailscale address. Internal helpers bind only to `127.0.0.1`.

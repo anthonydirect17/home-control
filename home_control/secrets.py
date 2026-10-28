@@ -1,16 +1,17 @@
-"""Find credentials without ever storing them in this folder.
+"""Find credentials without ever storing them in the repo.
 
 Each secret is looked up, in order:
   1. its environment variable
   2. the secrets store:
-     - Windows, default: Credential Manager, under the app's own entry name
-     - Windows, after `--secrets-store file`: %LOCALAPPDATA%\\home-control\\secrets.json,
-       locked so only this Windows account can open it. This is the fallback
-       for when Credential Manager can't be read with nobody signed in.
-     - Linux/macOS: ~/.config/home-control/secrets.json (readable by you only)
+     - default (every OS): `data/secrets.json` in the app's own data folder.
+       The data folder is git-ignored, and the file is locked so only the
+       account running the app can open it (icacls on Windows, 0600 elsewhere).
+     - Windows, after `--secrets-store credential-manager`: that account's
+       Windows Credential Manager, under the app's own entry names.
      The --set-... commands save into whichever store is active.
-  3. for the Govee Desktop GUID only: the Credential Manager entry named in
-     settings ("guid_credential"), or the only other entry with "govee" in its name
+  3. for the Govee Desktop GUID only, in Credential Manager mode: the entry
+     named in settings ("guid_credential"), or the only other entry with
+     "govee" in its name
 """
 
 import json
@@ -129,20 +130,26 @@ def govee_credential_names():
         _advapi.CredFree(creds)
 
 
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+_data_dir = _DEFAULT_DATA_DIR
+
+
+def set_data_dir(path):
+    """The app calls this at start-up with its --data folder; the secrets file lives there."""
+    global _data_dir
+    _data_dir = path or _DEFAULT_DATA_DIR
+
+
 def secrets_store(settings=None):
-    """Which store is active: Credential Manager (Windows default) or the private file."""
-    if sys.platform != "win32":
-        return STORE_FILE
-    chosen = (settings or {}).get("secrets_store") or STORE_CREDMAN
-    return STORE_FILE if chosen == STORE_FILE else STORE_CREDMAN
+    """Which store is active: the private file in the data folder (default) or Credential Manager."""
+    chosen = (settings or {}).get("secrets_store") or STORE_FILE
+    if chosen == STORE_CREDMAN and sys.platform == "win32":
+        return STORE_CREDMAN
+    return STORE_FILE
 
 
 def secrets_file():
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    else:
-        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "home-control", "secrets.json")
+    return os.path.join(_data_dir, "secrets.json")
 
 
 def _current_user_sid():
@@ -186,11 +193,7 @@ def _read_file_all():
 
 def _write_file_secret(target, value):
     path = secrets_file()
-    folder = os.path.dirname(path)
-    new_folder = not os.path.isdir(folder)
-    os.makedirs(folder, exist_ok=True)
-    if new_folder or sys.platform != "win32":
-        _lock_down(folder, is_dir=True)  # files created inside inherit the locked-down rights
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     data = _read_file_all()
     data[target] = value
     tmp = path + ".tmp"
@@ -212,7 +215,7 @@ def save_secret_value(name: str, value: str, settings: dict = None):
 
 
 def copy_secrets_to_file(settings: dict = None):
-    """Copy every secret found in Credential Manager into the private file. Returns the names copied."""
+    """Copy every secret found in Credential Manager into the data-folder file. Returns the names copied."""
     copied = []
     for name, spec in SECRETS.items():
         value = read_credential(spec["target"])
