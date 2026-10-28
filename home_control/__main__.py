@@ -5,12 +5,13 @@
     python -m home_control --set-pin          set the 6-digit page PIN
     python -m home_control --set-govee-key    save your Govee API key
     python -m home_control --set-guid         save the Govee Desktop API GUID (optional)
-    python -m home_control --secrets-store file
-                                              keep secrets in a private file instead of
-                                              Windows Credential Manager (see secrets.py)
+    python -m home_control --secrets-store credential-manager
+                                              keep secrets in Windows Credential Manager instead
+                                              of data/secrets.json (see secrets.py)
 
-Secrets go into the active secrets store: Credential Manager on Windows by
-default, otherwise a private file. Typing is always hidden.
+Secrets go into the active secrets store: by default data/secrets.json in the
+app's own data folder, locked to the account running the app. Typing is
+always hidden.
 """
 
 import argparse
@@ -61,8 +62,9 @@ def set_secrets_store(store, choice):
         return 1
     if choice == STORE_FILE and sys.platform == "win32":
         copied = copy_secrets_to_file(store.get("settings"))
-        print(f"Copied {len(copied)} saved secret(s) from Credential Manager into {secrets_file()}: "
-              + (", ".join(copied) or "none found"))
+        if copied:
+            print(f"Copied {len(copied)} saved secret(s) from Credential Manager into {secrets_file()}: "
+                  + ", ".join(copied))
     store.update_settings({"secrets_store": choice})
     print(f"Secrets store is now: {choice}. Restart the app if it's running.")
     return 0
@@ -145,7 +147,9 @@ def main():
                         help="choose where secrets are kept, then exit")
     args = parser.parse_args()
 
+    from .secrets import set_data_dir
     from .store import Store
+    set_data_dir(args.data)
     store = Store(os.path.join(args.data, "settings.json"))
 
     if args.secrets_store:

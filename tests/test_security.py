@@ -158,9 +158,9 @@ def test_sensitive_actions_need_the_pin_every_time(app_env):
 def test_page_cannot_change_server_only_settings(app_env):
     app, client, gate, clock, controller, store = app_env
     client.post("/api/auth/login", json={"pin": PIN})
-    s = client.post("/api/settings", json={"govee_dll": "C:/evil.dll", "secrets_store": "file",
+    s = client.post("/api/settings", json={"govee_dll": "C:/evil.dll", "secrets_store": "credential-manager",
                                            "guid_credential": "x", "default_fps": 6}).json()
-    assert s["govee_dll"] is None and s["secrets_store"] == "credential-manager"
+    assert s["govee_dll"] is None and s["secrets_store"] == "file"
     assert s["guid_credential"] is None and s["default_fps"] == 6
 
 
@@ -218,63 +218,60 @@ def test_session_key_falls_back_to_temporary_when_store_is_unwritable():
     assert len(key) == 32 and not saved
 
 
-# ---------- secrets file fallback ----------
+# ---------- secrets store ----------
 
-def test_store_choice_defaults_to_credential_manager_on_windows(monkeypatch):
+def test_data_folder_file_is_the_default_everywhere(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    assert secrets.secrets_store({}) == "credential-manager"
+    assert secrets.secrets_store({}) == "file"
     assert secrets.secrets_store({"secrets_store": "file"}) == "file"
-    assert secrets.secrets_store({"secrets_store": "anything-else"}) == "credential-manager"
+    assert secrets.secrets_store({"secrets_store": "credential-manager"}) == "credential-manager"
+    assert secrets.secrets_store({"secrets_store": "anything-else"}) == "file"
     monkeypatch.setattr(sys, "platform", "linux")
-    assert secrets.secrets_store({"secrets_store": "credential-manager"}) == "file"
+    assert secrets.secrets_store({"secrets_store": "credential-manager"}) == "file"  # Windows only
 
 
-def test_windows_secrets_file_lives_in_localappdata(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    assert secrets.secrets_file() == os.path.join(str(tmp_path), "home-control", "secrets.json")
+def test_secrets_file_follows_the_data_folder(tmp_path):
+    secrets.set_data_dir(str(tmp_path / "data"))
+    assert secrets.secrets_file() == os.path.join(str(tmp_path), "data", "secrets.json")
 
 
 def test_icacls_leaves_only_this_account():
     sid = "S-1-5-21-1-2-3-1001"
-    assert secrets.icacls_commands(r"C:\x\home-control", True, sid) == [
-        ["icacls", r"C:\x\home-control", "/inheritance:r", "/grant:r", f"*{sid}:(OI)(CI)F"]]
-    assert secrets.icacls_commands(r"C:\x\s.json", False, sid)[0][-1] == f"*{sid}:F"
+    assert secrets.icacls_commands(r"C:\x\s.json", False, sid) == [
+        ["icacls", r"C:\x\s.json", "/inheritance:r", "/grant:r", f"*{sid}:F"]]
 
 
-def test_file_store_round_trip_with_windows_lockdown(monkeypatch, tmp_path):
-    """Simulates Windows: the file store is used only when chosen, and every write is locked down."""
+def test_windows_file_store_round_trip_and_lockdown(monkeypatch, tmp_path):
+    """Simulates Windows: the data-folder file is the default, and every write locks the file down."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    monkeypatch.delenv("GOVEE_API_KEY", raising=False)
+    secrets.set_data_dir(str(tmp_path / "data"))
     calls = []
     monkeypatch.setattr(secrets, "_current_user_sid", lambda: "S-1-5-21-9")
     monkeypatch.setattr(secrets.subprocess, "run",
                         lambda cmd, **kw: calls.append((cmd, kw)) or type("R", (), {"returncode": 0})())
-    monkeypatch.setattr(secrets, "read_credential", lambda target: {"home-control/govee-api-key": "from-credman"}.get(target))
+    monkeypatch.setattr(secrets, "read_credential",
+                        lambda target: {"home-control/govee-api-key": "from-credman"}.get(target))
 
-    settings = {"secrets_store": "file"}
-    assert secrets.get_secret("govee-api-key", settings)[0] is None  # file empty; Credential Manager not consulted
-    assert secrets.get_secret("govee-api-key", {})[0] == "from-credman"
+    assert secrets.get_secret("govee-api-key", {})[0] is None  # default file is empty; Credential Manager not read
+    assert secrets.get_secret("govee-api-key", {"secrets_store": "credential-manager"})[0] == "from-credman"
 
-    copied = secrets.copy_secrets_to_file(settings)
-    assert copied == ["govee-api-key"]
-    value, where = secrets.get_secret("govee-api-key", settings)
-    assert value == "from-credman" and where.endswith("secrets.json")
+    assert secrets.copy_secrets_to_file({}) == ["govee-api-key"]
+    value, where = secrets.get_secret("govee-api-key", {})
+    assert value == "from-credman" and where == secrets.secrets_file()
 
-    secrets.save_secret_value("session-key", "abcd", settings)
-    assert secrets.get_secret("session-key", settings)[0] == "abcd"
-    locked = [c[0][1] for c in calls]
-    assert secrets.secrets_file() in locked and os.path.dirname(secrets.secrets_file()) in locked
+    secrets.save_secret_value("session-key", "abcd", {})
+    assert secrets.get_secret("session-key", {})[0] == "abcd"
+    locked = {c[0][1] for c in calls}
+    assert locked == {secrets.secrets_file()}  # only the file; the rest of data/ is left alone
     assert all(kw.get("creationflags", 0) == secrets.NO_WINDOW for _, kw in calls)
 
 
 def test_lockdown_failure_is_reported(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    secrets.set_data_dir(str(tmp_path / "data"))
     monkeypatch.setattr(secrets, "_current_user_sid", lambda: None)
     with pytest.raises(OSError, match="SID"):
-        secrets.save_secret_value("session-key", "abcd", {"secrets_store": "file"})
+        secrets.save_secret_value("session-key", "abcd", {})
 
 
 # ---------- auto-start helpers ----------

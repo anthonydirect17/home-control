@@ -1,7 +1,7 @@
 """The page PIN.
 
 - The PIN is exactly 6 digits. Only a salted scrypt hash of it is stored, as
-  a secret (Credential Manager or the private secrets file), never the PIN.
+  a secret (data/secrets.json or Credential Manager), never the PIN.
 - After a correct PIN the browser gets a signed "remember this device"
   cookie, good for 30 days. Changing the PIN signs every device out.
 - Arming, disarming and sirens ask for the PIN again every time

@@ -37,7 +37,7 @@ One control center for the house, running on an always-on home server and opened
 | **Alexa through the same Node helper** using `alexa-remote2` | No official API lets a home app make an Echo speak. `alexa-remote2` is the unofficial library used by Node-RED and ioBroker. |
 | **Sonos through Python `soco`** (local network) | Sonos is controlled locally, so it's reliable and fast. |
 | **Govee: LAN API first, cloud API second, Govee Desktop optional** | LAN is fast and reports state. Cloud reaches every light and runs scenes. Govee Desktop is only needed for per-segment effects, and requires running as admin. |
-| **Public GitHub repo; secrets never in it** | Owner's choice. Personal data lives in `data/` (git-ignored). Keys are in Windows Credential Manager or `~/.config/home-control/secrets.json`. |
+| **Public GitHub repo; secrets never in it** | Owner's choice. Personal data and keys live in the app's git-ignored `data/` folder. Keys go in `data/secrets.json`, locked to the account running the app (Credential Manager is an option). |
 | **Page reachable over Tailscale** | The owner wants to reach it from anywhere. Bind to the server's Tailscale address. The page has no login yet, so never expose it beyond Tailscale. |
 
 ## 3. What exists today (`main` branch)
@@ -50,7 +50,7 @@ home_control/
   patterns.py        effect patterns: solid, breathe, color cycle, chase, rainbow, twinkle, candy cane, christmas
   scheduler.py, sun.py   timers incl. sunrise/sunset (low priority)
   store.py           data/settings.json: settings, groups, presets, schedules, aliases, lan_cache
-  secrets.py         Credential Manager (Windows) / private file (Linux) / env vars
+  secrets.py         data/secrets.json (default, locked to the account) / Credential Manager / env vars
   server.py          JSON API + serves static/ (the page)
   govee/lan.py       Govee LAN API (UDP 4001 multicast scan, 4002 replies, 4003 commands)
   govee/cloud.py     Govee cloud API v1 router (openapi.api.govee.com)
@@ -79,56 +79,23 @@ tests/               59 tests: pretend lights, pretend LAN light over real UDP, 
 - One light ("front lights") had LAN Control off.
 - The owner has more lights than that, so expect the cloud to list more than the LAN scan finds.
 
-## 4. Server setup checklist
+## 4. Server setup
 
-Ask the owner which OS the server runs. The steps are written for **Windows**; Linux equivalents are noted.
+**The machine may be shared with more important work.** It runs the owner's other software as well. Follow the owner's private machine rules (given in chat or a private handoff, never in this repo); they win over anything here. In short:
+- **One account:** Home Control runs **in the owner's own Windows account**, in its signed-in session. The machine signs in automatically after a restart and then locks itself, so that session is always there.
+- **Server-side steps:** whoever administers the box carries them all out from a request card, never this session directly. That covers the folder, scheduled task, firewall rules, ports and installs.
+- **Your folder:** this session works only inside the app's own folder, `C:\Apps\HomeControl\`: the clone, `.venv`, `data\` and `logs\`.
+- **Priority:** the app stays light (well under 25% CPU and 1 GB RAM on average) and yields to the machine's main work.
 
-1. **Power and updates:**
-   - never sleep or hibernate
-   - BIOS/UEFI "restore on AC power loss" = **On**, so it comes back after an outage
-   - Windows Update active hours set so restarts happen at night
-2. **Network:**
-   - Wired Ethernet if possible.
-   - A **DHCP reservation** for the server on the owner's router, so its address never changes.
-   - **Same network/VLAN as the lights, Echos and Sonos.** Many routers put IoT gear on a guest network; check this.
-3. **Tailscale:**
-   - install it and sign in to the owner's tailnet
-   - note the server's `100.x.y.z` address
-   - optionally turn on MagicDNS so the page has a name
-4. **Software:**
-   - Python 3.11+ (tick "Add to PATH")
-   - Node.js 22 LTS
-   - Git
-   - check versions with `python --version`, `node --version`, `git --version`
-5. **Code:**
-   ```
-   git clone https://github.com/anthonydirect17/home-control %USERPROFILE%\home-control
-   cd %USERPROFILE%\home-control
-   python -m pip install -r requirements.txt
-   python -m home_control --demo --no-browser
-   ```
-   Open http://127.0.0.1:8780/ and confirm 4 pretend lights, then stop it with Ctrl+C.
-6. **Govee key:**
-   - The owner runs `python -m home_control --set-govee-key` **in their own terminal** and types the key. It was emailed by Govee to the owner's Govee account email.
-   - Never ask for the key in chat.
-   - Govee Desktop is **not** needed on the server. Don't install it unless the owner wants per-segment effects.
-7. **Windows Firewall:** scope every inbound rule by port and remote address, not by program:
-   - TCP 8780 (the page) only from the Tailscale range `100.64.0.0/10`. Don't tie the rule to the server's own Tailscale address.
-   - UDP 4002 only, for Govee LAN replies. 4001 and 4003 are outgoing only.
-   - Later: the Sonos audio-file port (phase 4)
-8. **Start it for real:**
-   ```
-   python -m home_control --host tailscale --no-browser
-   ```
-   `--host tailscale` binds to the machine's current Tailscale address, looked up at every start, so an address change never breaks it. If the owner also wants it reachable at `localhost` on the server itself, discuss binding `0.0.0.0` together with a firewall rule restricting TCP 8780 to Tailscale and localhost.
-9. **Auto-start** (after phase 1 passes):
-   - **Windows:** a Task Scheduler task with these settings:
-     - trigger "At startup"
-     - "Run whether user is logged on or not", under the owner's account, so Credential Manager entries are readable
-     - "Restart if the task fails" every 1 minute
-     - no time limit
-   - **Linux:** a systemd service with `Restart=always`.
-   - Either way, confirm it comes back after a reboot.
+**The steps themselves** are in **[WINDOWS_SERVER_SETUP.md](WINDOWS_SERVER_SETUP.md)**:
+- software, code and venv
+- secrets in `data\secrets.json`, locked to the account
+- the PIN
+- firewall rules scoped by port and remote address: TCP 8780 from the Tailscale range, UDP 4002 from the LAN
+- the hidden `HomeControl` task in the signed-in session, with `--host tailscale` and `--keep-running`
+- the restart test
+
+**Still check with the owner:** the lights, Echos and Sonos must be on the same network as the server, not a guest or IoT network.
 
 ## 5. Phase 1: verify Govee on real hardware
 

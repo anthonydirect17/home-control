@@ -7,8 +7,8 @@ requests an account can make, so it's used for commands, never for
 frame-by-frame effects.
 
 Needs the API key requested in the Govee Home app (Profile -> Settings ->
-Apply for API Key). The key is read from Windows Credential Manager or the
-GOVEE_API_KEY environment variable, never from this folder.
+Apply for API Key). The key is read from the app's secrets store (see
+secrets.py) or the GOVEE_API_KEY environment variable, never from the repo.
 """
 
 import json

@@ -48,9 +48,7 @@ python -m home_control --set-guid
 - `--set-govee-key` saves your Govee API key (emailed by Govee).
 - `--set-guid` saves the Govee Desktop API GUID. It's optional, and only needed for multi-segment effects.
 
-On Windows they go into Credential Manager (`home-control/govee-api-key`, `home-control/govee-desktop-guid`). If Credential Manager can't be used (for example, with nobody signed in), `--secrets-store file` switches to `%LOCALAPPDATA%\home-control\secrets.json`, locked to your account. On Linux or macOS they go into `~/.config/home-control/secrets.json`, readable only by you. Environment variables `GOVEE_API_KEY` and `GOVEE_DESKTOP_GUID` also work.
-
-For the Govee Desktop GUID, if you saved it under another Credential Manager name earlier, the app finds it automatically when it's the only entry with "govee" in its name.
+They go into `data/secrets.json` in the app's own folder. `data/` is git-ignored, and the file is locked so only the account running the app can open it. On Windows, `--secrets-store credential-manager` uses that account's Credential Manager instead. Environment variables `GOVEE_API_KEY` and `GOVEE_DESKTOP_GUID` also work.
 
 ### Page PIN
 
@@ -70,7 +68,7 @@ python -m home_control --set-pin
 run.bat
 ```
 
-or `python -m home_control`. To run it on an always-on Windows server (hidden, started at boot, nobody signed in), follow [docs/WINDOWS_SERVER_SETUP.md](docs/WINDOWS_SERVER_SETUP.md).
+or `python -m home_control`. To run it on an always-on Windows server (hidden, started automatically, reachable over Tailscale), follow [docs/WINDOWS_SERVER_SETUP.md](docs/WINDOWS_SERVER_SETUP.md).
 
 ## Good to know
 
@@ -87,7 +85,7 @@ This repository is public. Everything personal lives in `data/`, which `.gitigno
 - groups, effects and timers
 - your latitude and longitude
 
-Keys and the PIN hash are only ever in Credential Manager, the private secrets file, or environment variables.
+Keys and the PIN hash are only ever in `data/secrets.json` (locked to the account), Credential Manager if you choose it, or environment variables.
 
 `GET /api/health` (no PIN needed, for monitoring) shows the version, uptime, which connections are up, and the time of the last activity. It never shows names, addresses or secrets.
 

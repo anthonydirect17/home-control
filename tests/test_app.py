@@ -186,16 +186,17 @@ def test_state_poll_reports_light_state(env):
     assert lamp["reported"] and lamp["color"] == "#123456"
 
 
-def test_secrets_file_on_non_windows(tmp_path, monkeypatch):
+def test_secrets_file_in_the_data_folder(tmp_path, monkeypatch):
     import os
     import sys
     from home_control import secrets
     if sys.platform == "win32":
-        pytest.skip("Windows uses Credential Manager")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("GOVEE_API_KEY", raising=False)
+        pytest.skip("on Windows the file is locked with icacls; see test_security.py")
+    secrets.set_data_dir(str(tmp_path / "data"))
+    assert secrets.secrets_file() == str(tmp_path / "data" / "secrets.json")
     assert secrets.get_secret("govee-api-key")[0] is None
     where = secrets.save_secret_value("govee-api-key", "abc123")
+    assert where == secrets.secrets_file()
     assert oct(os.stat(where).st_mode & 0o777) == "0o600"
     assert secrets.get_secret("govee-api-key") == ("abc123", where)
     monkeypatch.setenv("GOVEE_API_KEY", "from-env")
