@@ -156,6 +156,7 @@ class RingBridge:
         elif kind == "ready":
             self.status.update(connected=True, error=None, cameras=msg.get("cameras", 0),
                                sensors=msg.get("sensors", 0))
+            self.log(f"Ring: connected, {self.status['cameras']} cameras, {self.status['sensors']} sensors")
         elif kind == "status":
             self.status["connected"] = bool(msg.get("connected"))
         elif kind == "event":
@@ -164,6 +165,7 @@ class RingBridge:
             self.bus.publish(event)
         elif kind == "error":
             self.status.update(connected=False, error=f"Ring: {msg.get('message', 'unknown error')}")
+            self.log(self.status["error"])
 
     # talking to the helper
 

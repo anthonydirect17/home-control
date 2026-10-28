@@ -113,6 +113,22 @@ def test_helper_is_restarted_after_it_stops(helper):
     assert wait_for(lambda: sum(1 for e in read_log(log) if e.get("started")) >= 2)
 
 
+def test_connect_and_errors_are_logged_without_the_token(helper, monkeypatch):
+    make, bus, saved, log, _ = helper
+    lines = []
+    b = make()
+    b.log = lines.append
+    b.start()
+    assert wait_for(lambda: any(line.startswith("Ring: connected, 1 cameras") for line in lines))
+    assert not any("tok-1" in line for line in lines)
+    b.stop()
+    lines.clear()
+    b2 = make("fail", retry_delay=5)
+    b2.log = lines.append
+    b2.start()
+    assert wait_for(lambda: "Ring: Refresh token is not valid" in lines)
+
+
 def test_helper_error_is_shown(helper):
     make, bus, saved, log, _ = helper
     b = make("fail", retry_delay=5)
