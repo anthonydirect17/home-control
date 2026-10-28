@@ -50,7 +50,7 @@ python -m home_control --set-guid
 - `--set-govee-key` saves your Govee API key (emailed by Govee).
 - `--set-guid` saves the Govee Desktop API GUID. It's optional, and only needed for multi-segment effects.
 
-They go into `data/secrets.json` in the app's own folder. `data/` is git-ignored, and the file is locked so only the account running the app can open it. On Windows, `--secrets-store credential-manager` uses that account's Credential Manager instead. Environment variables `GOVEE_API_KEY` and `GOVEE_DESKTOP_GUID` also work.
+They go into `data/secrets.json` in the app's own folder. `data/` is git-ignored, and the file is locked so only the account running the app can open it. On Windows every value in it is also encrypted with DPAPI for that account; `python -m home_control --check-secrets` shows each secret's name and whether it is encrypted, never the value. On Windows, `--secrets-store credential-manager` uses that account's Credential Manager instead. Environment variables `GOVEE_API_KEY` and `GOVEE_DESKTOP_GUID` also work.
 
 ### Page PIN
 
@@ -110,7 +110,7 @@ This repository is public. Everything personal lives in `data/`, which `.gitigno
 - groups, effects and timers
 - your latitude and longitude
 
-Keys and the PIN hash are only ever in `data/secrets.json` (locked to the account), Credential Manager if you choose it, or environment variables.
+Keys and the PIN hash are only ever in `data/secrets.json` (locked to the account, and DPAPI-encrypted on Windows), Credential Manager if you choose it, or environment variables.
 
 `GET /api/health` (no PIN needed, for monitoring) shows the version, uptime, which connections are up, and the time of the last activity. It never shows names, addresses or secrets.
 

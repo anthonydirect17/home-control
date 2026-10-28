@@ -6,6 +6,10 @@ Each secret is looked up, in order:
      - default (every OS): `data/secrets.json` in the app's own data folder.
        The data folder is git-ignored, and the file is locked so only the
        account running the app can open it (icacls on Windows, 0600 elsewhere).
+       On Windows every value in it is also encrypted with DPAPI for that
+       account (stored as "dpapi:<base64>"); plain values left from older
+       versions are encrypted at the next start. Other systems keep plain
+       values in the locked file.
      - Windows, after `--secrets-store credential-manager`: that account's
        Windows Credential Manager, under the app's own entry names.
      The --set-... commands save into whichever store is active.
@@ -14,10 +18,13 @@ Each secret is looked up, in order:
      "govee" in its name
 """
 
+import base64
+import binascii
 import json
 import os
 import subprocess
 import sys
+import threading
 
 SECRETS = {
     "govee-desktop-guid": {"env": "GOVEE_DESKTOP_GUID", "target": "home-control/govee-desktop-guid",
@@ -37,6 +44,7 @@ SECRETS = {
 SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin",
              "ring-refresh-token": "--ring-login"}
 
+MARKER = "dpapi:"  # an encrypted value is MARKER + base64 of the DPAPI output
 STORE_CREDMAN = "credential-manager"
 STORE_FILE = "file"
 # Windows only: start a console program without flashing a window.
@@ -187,6 +195,48 @@ def _lock_down(path, is_dir):
             raise OSError(f"icacls failed on {path}: {result.stdout.strip() or result.stderr.strip()}")
 
 
+class SecretUnreadable(Exception):
+    """A saved value that can't be decrypted here. The message never contains the stored text."""
+
+
+def _cipher():
+    """DPAPI on Windows; None elsewhere (values stay plain in the locked file, as before)."""
+    if sys.platform == "win32":
+        from . import dpapi
+        return dpapi
+    return None
+
+
+def _conceal(value: str) -> str:
+    cipher = _cipher()
+    if cipher is None:
+        return value
+    return MARKER + base64.b64encode(cipher.protect(value.encode("utf-8"))).decode("ascii")
+
+
+def _reveal(stored: str) -> str:
+    if not stored.startswith(MARKER):
+        return stored  # plain, from before encryption (or not Windows)
+    cipher = _cipher()
+    if cipher is None:
+        raise SecretUnreadable("it is encrypted with Windows DPAPI and can't be read on this system")
+    try:
+        return cipher.unprotect(base64.b64decode(stored[len(MARKER):], validate=True)).decode("utf-8")
+    except (OSError, ValueError, binascii.Error):
+        raise SecretUnreadable("this Windows account can't decrypt it (saved by another account, "
+                               "or the account's keys were reset)") from None
+
+
+def _name_of(target):
+    for name, spec in SECRETS.items():
+        if spec["target"] == target:
+            return name
+    return target
+
+
+_file_lock = threading.RLock()  # the Ring token can be saved from another thread
+
+
 def _read_file_all():
     try:
         with open(secrets_file(), encoding="utf-8") as f:
@@ -195,11 +245,9 @@ def _read_file_all():
         return {}
 
 
-def _write_file_secret(target, value):
+def _write_file_all(data):
     path = secrets_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = _read_file_all()
-    data[target] = value
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -207,6 +255,73 @@ def _write_file_secret(target, value):
     os.replace(tmp, path)
     _lock_down(path, is_dir=False)
     return path
+
+
+def _write_file_secret(target, value):
+    stored = _conceal(value)  # encrypt before touching the file; if it fails, nothing is written
+    with _file_lock:
+        data = _read_file_all()
+        data[target] = stored
+        return _write_file_all(data)
+
+
+def encrypt_saved_secrets():
+    """Encrypt every plain value left in the secrets file. Returns the names encrypted, never values."""
+    if _cipher() is None or not os.path.exists(secrets_file()):
+        return []
+    with _file_lock:
+        data = _read_file_all()
+        plain = [k for k, v in data.items() if isinstance(v, str) and v and not v.startswith(MARKER)]
+        if not plain:
+            return []
+        for k in plain:
+            data[k] = _conceal(data[k])
+        _write_file_all(data)
+    return [_name_of(k) for k in plain]
+
+
+def secrets_report(settings: dict = None):
+    """[(name, state)] for every secret: how it is kept, and whether it is encrypted. Never a value."""
+    rows = []
+    if secrets_store(settings) == STORE_CREDMAN:
+        for name, spec in SECRETS.items():
+            if os.environ.get(spec["env"], "").strip():
+                rows.append((name, f"from the {spec['env']} environment variable (not on disk)"))
+            else:
+                saved = read_credential(spec["target"]) is not None
+                rows.append((name, "in Windows Credential Manager (protected by Windows)" if saved else "not saved"))
+        return rows
+    data = _read_file_all()
+    encrypting = _cipher() is not None
+    for target in [s["target"] for s in SECRETS.values()] + sorted(set(data) - {s["target"] for s in SECRETS.values()}):
+        name = _name_of(target)
+        spec = SECRETS.get(name)
+        stored = data.get(target)
+        from_env = bool(spec and os.environ.get(spec["env"], "").strip())
+        if not isinstance(stored, str) or not stored:
+            state = "not saved"
+            if from_env:
+                state = f"from the {spec['env']} environment variable (not on disk)"
+                from_env = False
+        elif stored.startswith(MARKER):
+            try:
+                _reveal(stored)
+                state = "encrypted"
+            except SecretUnreadable as e:
+                state = f"encrypted, but {e}"
+        elif encrypting:
+            state = "NOT encrypted (it will be encrypted at the next start)"
+        else:
+            state = "not encrypted (DPAPI is Windows only; the file is locked to this account)"
+        if from_env:
+            state += f"; the {spec['env']} environment variable is used instead"
+        rows.append((name, state))
+    return rows
+
+
+def report_is_ok(rows):
+    """True when nothing is left unencrypted on Windows and nothing fails to decrypt."""
+    return not any(state.startswith("NOT encrypted") or state.startswith("encrypted, but") for _, state in rows)
 
 
 def save_secret_value(name: str, value: str, settings: dict = None):
@@ -238,9 +353,13 @@ def get_secret(name: str, settings: dict = None):
     missing = f"not saved yet (python -m home_control {SET_FLAGS[name]})" if name in SET_FLAGS else "not saved yet"
 
     if secrets_store(settings) == STORE_FILE:
-        value = _read_file_all().get(spec["target"])
-        if value:
-            return value, secrets_file()
+        stored = _read_file_all().get(spec["target"])
+        if stored:
+            try:
+                return _reveal(stored), secrets_file()
+            except SecretUnreadable as e:
+                again = f" (save it again: python -m home_control {SET_FLAGS[name]})" if name in SET_FLAGS else ""
+                return None, f"saved in {secrets_file()}, but {e}{again}"
         return None, missing
 
     value = read_credential(spec["target"])
