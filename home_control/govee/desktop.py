@@ -77,7 +77,7 @@ def _load_runtime(dll_path):
     try:
         import pythonnet
     except ImportError as e:
-        raise BackendError("pythonnet is not installed (pip install -r requirements.txt)") from e
+        raise BackendError("pythonnet is not installed (pip install -r requirements-desktop.txt)") from e
     with open(dll_path, "rb") as f:
         blob = f.read()
     try:

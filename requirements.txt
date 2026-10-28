@@ -1,4 +1,15 @@
-fastapi>=0.110,<1.0
-pydantic>=2.5,<3
-uvicorn>=0.29
-pythonnet>=3.0.3; sys_platform == "win32"
+# Exact versions, each released at least two weeks before it was pinned
+# (pinned 2026-10-28). Update deliberately, never by range.
+fastapi==0.141.1
+starlette==1.8.0
+pydantic==2.14.1
+pydantic-core==2.50.1
+annotated-types==0.8.0
+annotated-doc==0.0.5
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+anyio==4.15.1
+idna==3.20
+uvicorn==0.54.0
+click==8.5.0
+h11==0.16.0
