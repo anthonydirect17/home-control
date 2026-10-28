@@ -71,15 +71,32 @@ def set_secrets_store(store, choice):
     return 0
 
 
+class MaskedLog:
+    """A log file that keeps IP addresses out: everything written passes through mask_addresses()."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        from .netaddr import mask_addresses
+        self._stream.write(mask_addresses(text))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def open_log(path):
-    """Send all output to a log file, keeping a few old ones. Needed when started hidden (pythonw)."""
+    """Send all output to a log file, keeping a few old ones. Needed when started hidden (pythonw).
+
+    Addresses are masked in everything written, tracebacks included."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if os.path.exists(path) and os.path.getsize(path) > LOG_MAX_BYTES:
         for i in range(LOG_KEEP - 1, 0, -1):
             if os.path.exists(f"{path}.{i}"):
                 os.replace(f"{path}.{i}", f"{path}.{i + 1}")
         os.replace(path, f"{path}.1")
-    log = open(path, "a", encoding="utf-8", buffering=1)
+    log = MaskedLog(open(path, "a", encoding="utf-8", buffering=1))
     sys.stdout = sys.stderr = log
     print(f"--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
 
@@ -248,7 +265,7 @@ def serve(args, store):
         url = None
         print(f"Home Control is running on this machine's Tailscale address, port {args.port}")
     else:
-        url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '') else host}:{args.port}/"
+        url = f"http://{host}:{args.port}/"
         print(f"Home Control is running at {url}  (Ctrl+C to stop)")
     if url and not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()

@@ -107,14 +107,15 @@ The task it creates:
 | Setting | Value |
 |---|---|
 | Name | `HomeControl`. Keep this name: ServerWatch's restart button looks for it. |
-| Trigger | when the owner's account signs in, which happens automatically after a restart |
+| Trigger | 1 minute after the owner's account signs in (which happens automatically after a restart), then repeated every minute. A running app is left alone ("if already running: ignore new"); if its process was ended, the next minute starts it again. |
 | Runs | in that signed-in session (logon type Interactive, run level Limited). No password is stored, and saved logins are readable. |
 | Window | none: it runs `.venv\Scripts\pythonw.exe` |
 | Address | `--host tailscale`: the machine's current Tailscale address, looked up at every start |
-| Crash recovery | the app restarts itself 60 s after any crash, and retries every minute until Tailscale is up after boot. Task Scheduler also retries every minute if the task itself fails. |
+| Crash recovery | the app restarts itself 60 s after any crash, and retries every minute until Tailscale is up after boot. If the process itself is ended, the minute repeat starts it again. Task Scheduler also retries every minute if the task fails to start. |
+| Stopping on purpose | `Disable-ScheduledTask -TaskName HomeControl`, then end the task. Otherwise the minute repeat starts it again. `Enable-ScheduledTask` and `Start-ScheduledTask` bring it back. |
 | Priority | below normal |
 | Time limit | none |
-| Log | `APP\logs\home-control.log` (1 MB × 3). It doesn't record the Tailscale address. |
+| Log | `APP\logs\home-control.log` (1 MB × 3). IP addresses are masked in everything written to it, error reports included. |
 | Execution policy | `-ExecutionPolicy Bypass` applies to this one script run only; the machine's policy isn't changed. The scripts haven't been run yet; read them first. |
 
 Undo: `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1`. Code, data and secrets are left as they are.
@@ -125,7 +126,7 @@ Undo: `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1`. Code
 2. From another device on Tailscale, open `http://<server's Tailscale name>:PORT/api/health`. It should show the `lan` and `cloud` connections with `"up": true`, and a growing `uptime_seconds`.
 3. Open the page, enter the PIN, and switch a light.
 4. Read `APP\logs\home-control.log`. It should say `Govee cloud: on (key from ...secrets.json)`.
-5. End `pythonw.exe` in Task Manager. The task should start it again within about a minute; check `Get-ScheduledTaskInfo -TaskName HomeControl`. `--keep-running` covers crashes inside the app; this checks that the task covers the process being killed.
+5. End `pythonw.exe` in Task Manager. The task's minute repeat should start it again within about 2 minutes; check `Get-ScheduledTaskInfo -TaskName HomeControl`. `--keep-running` covers crashes inside the app; this checks that the task covers the process being ended.
 6. After phase 2, also confirm a rotated Ring token was saved across a restart.
 
 ## 7. Health endpoint

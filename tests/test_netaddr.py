@@ -43,3 +43,21 @@ def test_resolve_host():
     assert resolve_host("Tailscale", finder=lambda: "100.64.5.5") == "100.64.5.5"
     with pytest.raises(RuntimeError, match="Tailscale"):
         resolve_host("tailscale", finder=lambda: None)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]", ""])
+def test_never_listens_on_every_network(host):
+    with pytest.raises(RuntimeError, match="every network"):
+        resolve_host(host)
+
+
+def test_mask_addresses():
+    from home_control.netaddr import mask_addresses
+    text = ("bind on ('100.101.102.103', 8780) failed; light 192.168.1.44 replied; "
+            "v6 fd7a:115c:a1e0::1234 and fe80::1; device AB:CD:EF:12:34:56:78:90")
+    masked = mask_addresses(text)
+    for secret in ("100.101.102.103", "192.168.1.44", "fd7a:115c:a1e0::1234", "fe80::1", "AB:CD:EF:12:34:56:78:90"):
+        assert secret not in masked
+    assert masked.count("<address>") == 5
+    kept = "--- start 2026-10-30 21:35:02 --- Python 3.12.10, helper on 127.0.0.1:8782 and ::1"
+    assert mask_addresses(kept) == kept
