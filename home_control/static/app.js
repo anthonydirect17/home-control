@@ -571,6 +571,199 @@ async function loadStatus() {
       el("span", { class: b.connected ? "meta" : "err", text: b.connected ? (b.error || b.note || "Connected") : (b.error || "Not connected") }))));
 }
 
+// ---------- Ring ----------
+
+const MODE_LABELS = { none: "Disarmed", some: "Home", all: "Away" };
+const SENSOR_LABELS = {
+  "sensor.contact": "Door/window", "sensor.motion": "Motion", "sensor.glassbreak": "Glass break",
+  "sensor.flood-freeze": "Flood/freeze", "alarm.smoke": "Smoke", "alarm.co": "CO", "listener.smoke-co": "Smoke/CO listener",
+  "security-keypad": "Keypad", "hub.redsky": "Base station", "hub.kili": "Base station",
+};
+let ringTimer = null;
+
+// The page's own confirmation step plus the PIN, asked every time for arm, disarm and sirens.
+function confirmWithPin(title, text) {
+  const dlg = document.getElementById("confirm-dialog");
+  const pin = document.getElementById("confirm-pin");
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-text").textContent = text;
+  pin.value = "";
+  return new Promise(resolve => {
+    const done = value => { dlg.close(); cleanup(); resolve(value); };
+    const onSubmit = e => { e.preventDefault(); if (/^\d{6}$/.test(pin.value)) done(pin.value); else pin.focus(); };
+    const onCancel = () => done(null);
+    const cleanup = () => {
+      document.getElementById("confirm-form").removeEventListener("submit", onSubmit);
+      document.getElementById("confirm-cancel").removeEventListener("click", onCancel);
+      dlg.removeEventListener("cancel", onCancel);
+    };
+    document.getElementById("confirm-form").addEventListener("submit", onSubmit);
+    document.getElementById("confirm-cancel").addEventListener("click", onCancel);
+    dlg.addEventListener("cancel", onCancel);
+    dlg.showModal();
+    pin.focus();
+  });
+}
+
+async function ringAction(path, body, { title, text, okMsg }) {
+  if (title) {
+    const pin = await confirmWithPin(title, text);
+    if (pin === null) return;
+    body = { ...body, pin };
+  }
+  try {
+    await api("POST", path, body);
+    if (okMsg) toast(okMsg);
+    loadRing();
+  } catch (e) { toast(e.message, true); }
+}
+
+function describeRingEvent(e) {
+  const cam = e.camera ? e.camera.name : "";
+  const sensor = e.sensor ? e.sensor.name : "";
+  const where = e.location ? e.location.name : "Alarm";
+  switch (e.kind) {
+    case "doorbell": return [`Doorbell pressed: ${cam}`, "ok"];
+    case "motion": return [`Motion: ${cam}`, ""];
+    case "camera-offline": return [`Camera offline: ${cam}`, "warn"];
+    case "camera-online": return [`Camera back online: ${cam}`, ""];
+    case "battery-low": return [`Battery low: ${cam || sensor}${e.battery != null ? ` (${e.battery}%)` : ""}`, "warn"];
+    case "alarm-mode": return [`${where}: set to ${MODE_LABELS[e.mode] || e.mode}`, ""];
+    case "alarm": return [`${where}: ALARM (${e.state})`, "alarm"];
+    case "alarm-cleared": return [`${where}: alarm cleared`, "ok"];
+    case "siren-on": return [`${where}: siren on`, "alarm"];
+    case "siren-off": return [`${where}: siren off`, ""];
+    case "sensor-open": return [e.sensor && e.sensor.type === "sensor.motion" ? `Motion: ${sensor}` : `Opened: ${sensor}`, ""];
+    case "sensor-closed": return [e.sensor && e.sensor.type === "sensor.motion" ? `Clear: ${sensor}` : `Closed: ${sensor}`, ""];
+    case "sensor-tamper": return [`Tamper: ${sensor}`, "warn"];
+    case "sensor-tamper-cleared": return [`Tamper cleared: ${sensor}`, ""];
+    default: return [e.kind, ""];
+  }
+}
+
+function renderRingAlarm(locations) {
+  const box = document.getElementById("ring-alarm");
+  box.replaceChildren(...locations.filter(l => l.hasAlarm).map(l => {
+    const chip = l.alarmState
+      ? el("span", { class: "chip alarm", text: `ALARM: ${l.alarmState}` })
+      : el("span", { class: `chip ${l.mode === "none" ? "" : "ok"}`, text: MODE_LABELS[l.mode] || "Unknown" });
+    const modeButton = (mode, label) => el("button", {
+      class: "small" + (l.mode === mode ? "" : " ghost"), text: label, "aria-pressed": String(l.mode === mode),
+      onclick: () => ringAction(`/api/ring/locations/${encodeURIComponent(l.id)}/mode`, { mode }, {
+        title: mode === "none" ? `Disarm ${l.name}?` : `Arm ${l.name}: ${label}?`,
+        text: mode === "none" ? "This turns the alarm off." : `This arms the alarm in ${label} mode. Ring may refuse if a door or window is open.`,
+        okMsg: `${l.name}: ${label}`,
+      }),
+    });
+    return el("article", { class: "card" },
+      el("div", { class: "card-head" }, el("div", { class: "card-title", text: `${l.name} alarm` }), chip),
+      el("div", { class: "mode-buttons" }, modeButton("none", "Disarm"), modeButton("some", "Home"), modeButton("all", "Away")),
+      el("div", { class: "row" },
+        l.sirenOn
+          ? el("button", { class: "small", text: "Silence siren", onclick: () => ringAction(`/api/ring/locations/${encodeURIComponent(l.id)}/siren`, { on: false }, { title: "Silence the siren?", text: "Stops the Ring Alarm siren.", okMsg: "Siren silenced" }) })
+          : el("button", { class: "small danger", text: "Sound siren", onclick: () => ringAction(`/api/ring/locations/${encodeURIComponent(l.id)}/siren`, { on: true }, { title: "Sound the alarm siren?", text: "This sounds the Ring Alarm siren in the house. It does not call Ring's monitoring center.", okMsg: "Siren on" }) })));
+  }));
+}
+
+function renderRingCameras(cameras) {
+  const box = document.getElementById("ring-cameras");
+  if (!cameras.length) { box.replaceChildren(el("p", { class: "empty", text: "No cameras." })); return; }
+  box.replaceChildren(...cameras.map(c => {
+    const img = el("div", { class: "snap snap-empty", text: c.offline ? "Camera offline" : "No snapshot yet" });
+    const shot = el("button", { class: "small ghost", text: "Snapshot", disabled: c.offline, onclick: () => {
+      const pic = el("img", { class: "snap", alt: `Snapshot from ${c.name}`, src: `/api/ring/cameras/${encodeURIComponent(c.id)}/snapshot?t=${Date.now()}` });
+      pic.addEventListener("error", () => toast(`No snapshot from ${c.name} right now. Battery cameras allow one every few minutes.`, true));
+      img.replaceWith(pic);
+    } });
+    const clips = el("ul", { class: "list small" });
+    const clipsBtn = el("button", { class: "small ghost", text: "Recent clips", onclick: async () => {
+      try {
+        const events = await api("GET", `/api/ring/cameras/${encodeURIComponent(c.id)}/history?limit=8`);
+        clips.replaceChildren(...(events.length ? events.map(ev => el("li", {},
+          el("span", { text: `${new Date(ev.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${ev.kind}` }),
+          ev.hasRecording ? el("button", { class: "small ghost", text: "Play", onclick: async () => {
+            try { const r = await api("GET", `/api/ring/cameras/${encodeURIComponent(c.id)}/recording/${ev.dingId}`); window.open(r.url, "_blank", "noopener"); }
+            catch (e) { toast(e.message, true); }
+          } }) : el("span", { class: "meta", text: "no clip" })))
+          : [el("li", { class: "empty", text: "No recent clips." })]));
+      } catch (e) { toast(e.message, true); }
+    } });
+    const chips = [];
+    if (c.offline) chips.push(el("span", { class: "chip bad", text: "Offline" }));
+    if (c.battery != null) chips.push(el("span", { class: `chip ${c.batteryLow ? "warn" : ""}`, text: `Battery ${c.battery}%` }));
+    const controls = [shot, clipsBtn];
+    if (c.hasLight) controls.push(el("button", { class: "small" + (c.lightOn ? "" : " ghost"), text: c.lightOn ? "Light off" : "Light on",
+      onclick: () => ringAction(`/api/ring/cameras/${encodeURIComponent(c.id)}/light`, { on: !c.lightOn }, { okMsg: `${c.name}: light ${c.lightOn ? "off" : "on"}` }) }));
+    if (c.hasSiren) controls.push(el("button", { class: "small danger", text: "Siren",
+      onclick: () => ringAction(`/api/ring/cameras/${encodeURIComponent(c.id)}/siren`, { on: true }, { title: `Sound ${c.name}'s siren?`, text: "The camera's own siren sounds until it times out.", okMsg: "Camera siren on" }) }));
+    return el("article", { class: "card" },
+      el("div", { class: "card-head" },
+        el("div", {}, el("div", { class: "card-title", text: c.name }), el("div", { class: "meta", text: c.isDoorbell ? "Doorbell" : "Camera" })),
+        el("div", { class: "row" }, ...chips)),
+      img, el("div", { class: "row" }, ...controls), clips);
+  }));
+}
+
+function renderRingSensors(sensors) {
+  const list = document.getElementById("ring-sensors");
+  if (!sensors.length) { list.replaceChildren(el("li", { class: "empty", text: "No sensors." })); return; }
+  list.replaceChildren(...sensors.map(x => {
+    const isMotion = x.type === "sensor.motion";
+    const state = x.faulted ? (isMotion ? "Motion" : "Open") : (isMotion ? "Clear" : "Closed");
+    const bits = [state];
+    if (x.tamper) bits.push("tamper");
+    if (x.battery != null) bits.push(`battery ${x.battery}%`);
+    return el("li", {},
+      el("div", {}, el("div", { class: "card-title", text: x.name }), el("div", { class: "meta", text: SENSOR_LABELS[x.type] || x.type })),
+      el("span", { class: `chip ${x.tamper || x.batteryLow ? "warn" : x.faulted ? "ok" : ""}`, text: bits.join(" · ") }));
+  }));
+}
+
+async function loadRingEvents() {
+  try {
+    const events = await api("GET", "/api/ring/events?limit=30");
+    document.getElementById("ring-events").replaceChildren(...(events.length ? events.map(e => {
+      const [text, tone] = describeRingEvent(e);
+      return el("li", {},
+        el("span", { class: tone === "alarm" ? "err" : "", text }),
+        el("span", { class: "meta", text: new Date(e.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) }));
+    }) : [el("li", { class: "empty", text: "Nothing yet." })]));
+  } catch (_) { /* shown by loadRing */ }
+}
+
+async function loadRing() {
+  const conn = document.getElementById("ring-conn");
+  const problem = document.getElementById("ring-problem");
+  try {
+    const st = await api("GET", "/api/ring/status");
+    conn.textContent = st.connected ? `${st.label} · connected` : `${st.label} · not connected`;
+    conn.className = `chip ${st.connected ? "ok" : "bad"}`;
+    problem.hidden = st.connected || !st.error;
+    problem.textContent = st.error || "";
+    if (st.connected) {
+      const d = await api("GET", "/api/ring/devices");
+      renderRingAlarm(d.locations || []);
+      renderRingCameras(d.cameras || []);
+      renderRingSensors(d.sensors || []);
+    }
+    await loadRingEvents();
+  } catch (e) {
+    problem.hidden = false;
+    problem.textContent = e.message;
+  }
+}
+
+function startRingPolling() {
+  stopRingPolling();
+  loadRing();
+  ringTimer = setInterval(() => { loadRingEvents(); }, 5000);
+}
+
+function stopRingPolling() {
+  if (ringTimer) clearInterval(ringTimer);
+  ringTimer = null;
+}
+
 // ---------- tabs and startup ----------
 
 function refreshTargetSelects() {
@@ -588,6 +781,7 @@ function showTab(name) {
   document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
   document.querySelectorAll(".tab").forEach(t => { t.hidden = t.id !== `tab-${name}`; });
   if (name === "timers") loadTimers().catch(e => toast(e.message, true));
+  if (name === "ring") startRingPolling(); else stopRingPolling();
   try { localStorage.setItem("hc-tab", name); } catch (_) { /* storage blocked */ }
 }
 document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));

@@ -129,6 +129,17 @@ With the owner watching the lights:
 
 ## 6. Phase 2: Ring connector (Node.js helper)
 
+**Status: built and tested without Ring hardware (version 0.4).** What's in the code:
+- the helper: `ring-bridge/bridge.mjs` and `lib.mjs`, sign-in in `login.mjs`, with Node tests
+- the Python side: `home_control/ring.py`, plus `/api/ring/*` in `server.py`
+- the page's Ring tab
+- `--ring-login`
+- tests with a fake helper over the real stdin/stdout/HTTP protocol
+
+**Not yet done:** a real sign-in and a check against the owner's Ring devices. Doing that needs its own request card: install with `npm ci --ignore-scripts` in `ring-bridge`, then the owner runs `--ring-login`.
+
+The design below is what was built.
+
 Library: **`ring-client-api` 14.3.0** (Node `^20 || ^22 || ^24`). The facts below were checked against its published type definitions.
 
 **Sign-in:**

@@ -27,6 +27,7 @@
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="devices" aria-selected="true">Devices</button>
       <button role="tab" data-tab="groups">Groups</button>
+      <button role="tab" data-tab="ring">Ring</button>
       <button role="tab" data-tab="effects">Effects</button>
       <button role="tab" data-tab="timers">Timers</button>
       <button role="tab" data-tab="settings">Settings</button>
@@ -42,6 +43,28 @@
     </div>
     <p class="hint">Lights on your home network report their real state every 20 seconds. For the others, the state shown is what this app last sent.</p>
     <div id="device-list" class="cards"></div>
+  </section>
+
+  <section id="tab-ring" class="tab" hidden>
+    <div class="section-head">
+      <h2>Ring</h2>
+      <span id="ring-conn" class="chip">…</span>
+    </div>
+    <p id="ring-problem" class="err" hidden></p>
+    <div id="ring-alarm" class="cards"></div>
+    <h3>Cameras</h3>
+    <p class="hint">Snapshots are taken only when you ask, to save camera batteries.</p>
+    <div id="ring-cameras" class="cards"></div>
+    <div class="split">
+      <div class="panel">
+        <h3>Sensors</h3>
+        <ul id="ring-sensors" class="list small"></ul>
+      </div>
+      <div class="panel">
+        <h3>Recent events</h3>
+        <ul id="ring-events" class="list small"></ul>
+      </div>
+    </div>
   </section>
 
   <section id="tab-groups" class="tab" hidden>
@@ -166,6 +189,20 @@
     </div>
   </section>
 </main>
+
+<dialog id="confirm-dialog">
+  <form id="confirm-form" method="dialog" class="confirm-form">
+    <h3 id="confirm-title">Confirm</h3>
+    <p id="confirm-text" class="hint"></p>
+    <label>Your 6-digit PIN
+      <input id="confirm-pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6}" maxlength="6" required>
+    </label>
+    <div class="row">
+      <button type="submit" id="confirm-ok">Confirm</button>
+      <button type="button" id="confirm-cancel" class="ghost">Cancel</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="/static/app.js"></script>

@@ -143,6 +143,21 @@ label.check { color: var(--ink); }
 .pin-panel input { font-size: 1.6rem; letter-spacing: .5em; text-align: center; max-width: 240px; }
 .pin-panel button { width: 100%; max-width: 240px; }
 
+dialog {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink);
+  padding: 18px; width: min(380px, calc(100% - 32px));
+}
+dialog::backdrop { background: rgb(0 0 0 / .55); }
+.confirm-form { display: grid; gap: 12px; }
+.confirm-form input { font-size: 1.3rem; letter-spacing: .4em; text-align: center; }
+.snap { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--led-off); display: block; max-width: 100%; }
+.snap-empty { display: grid; place-items: center; color: var(--muted); font-size: .85rem; }
+.mode-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.mode-buttons button[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 1px; }
+.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.chip.alarm { color: #fff; background: var(--bad); border-color: var(--bad); }
+.chip.alarm::before { background: #fff; }
+
 #toast {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: min(560px, calc(100% - 32px));
   background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-size: .9rem;
