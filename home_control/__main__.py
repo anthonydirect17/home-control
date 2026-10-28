@@ -5,6 +5,7 @@
     python -m home_control --set-pin          set the 6-digit page PIN
     python -m home_control --set-govee-key    save your Govee API key
     python -m home_control --set-guid         save the Govee Desktop API GUID (optional)
+    python -m home_control --ring-login       sign in to Ring (email, hidden password, two-step code)
     python -m home_control --secrets-store credential-manager
                                               keep secrets in Windows Credential Manager instead
                                               of data/secrets.json (see secrets.py)
@@ -113,6 +114,26 @@ def build_backends(store, args):
     return backends
 
 
+def build_ring(store, args, bus):
+    from .ring import TOKEN_SECRET, DemoRing, RingBridge, node_command, setup_problem
+    from .secrets import get_secret, save_secret_value
+    if args.demo:
+        return DemoRing(bus)
+    settings = store.get("settings")
+    problem = setup_problem(settings.get("node_path"))
+    if problem:
+        print(f"Ring: off, {problem}.")
+        return None
+    print("Ring: on (signs in with the saved Ring token; --ring-login if there is none)")
+    return RingBridge(
+        node_command(settings.get("node_path")),
+        get_token=lambda: get_secret(TOKEN_SECRET, store.get("settings")),
+        save_token=lambda token: save_secret_value(TOKEN_SECRET, token, store.get("settings")),
+        bus=bus,
+        port=int(settings.get("ring_helper_port") or 8782),
+    )
+
+
 def build_gate(store, demo):
     from .auth import PinGate, load_or_create_session_key
     from .secrets import get_secret, save_secret_value
@@ -143,6 +164,7 @@ def main():
     parser.add_argument("--set-pin", action="store_true", help="set the 6-digit page PIN and exit")
     parser.add_argument("--set-guid", action="store_true", help="save the Govee Desktop API GUID and exit")
     parser.add_argument("--set-govee-key", action="store_true", help="save the Govee API key and exit")
+    parser.add_argument("--ring-login", action="store_true", help="sign in to Ring and exit")
     parser.add_argument("--secrets-store", choices=["credential-manager", "file"],
                         help="choose where secrets are kept, then exit")
     args = parser.parse_args()
@@ -160,6 +182,11 @@ def main():
         return save_secret("govee-desktop-guid", store.get("settings"))
     if args.set_govee_key:
         return save_secret("govee-api-key", store.get("settings"))
+    if args.ring_login:
+        from .ring import TOKEN_SECRET, ring_login
+        from .secrets import save_secret_value
+        settings = store.get("settings")
+        return ring_login(settings.get("node_path"), lambda t: save_secret_value(TOKEN_SECRET, t, settings))
 
     if args.log_file:
         open_log(args.log_file)
@@ -190,10 +217,15 @@ def serve(args, store):
     from .server import create_app
 
     host = resolve_host(args.host)  # raises if Tailscale isn't up yet; --keep-running retries
+    from .events import EventBus
+
     started_at = time.time()
     gate = build_gate(store, args.demo)
     hub = Hub(build_backends(store, args), store)
     controller = Controller(hub, store)
+    bus = EventBus()
+    bus.subscribe(lambda event: controller.touch())  # Ring events count as activity for /api/health
+    ring = build_ring(store, args, bus)
     status = controller.connect()
     for route, s in status["backends"].items():
         if not s["connected"]:
@@ -206,9 +238,11 @@ def serve(args, store):
     scheduler.start()
     poller = StatePoller(controller)
     poller.start()
+    if ring:
+        ring.start()
 
     import uvicorn
-    app = create_app(controller, store, scheduler, gate, started_at)
+    app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus)
     if args.host.lower() == "tailscale":
         # The address itself stays out of the log.
         url = None
@@ -223,6 +257,8 @@ def serve(args, store):
     finally:
         scheduler.stop()
         poller.stop()
+        if ring:
+            ring.stop()
         controller.stop_all()
         hub.close()
     return 0
