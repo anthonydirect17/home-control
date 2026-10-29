@@ -53,7 +53,7 @@ Each command asks with hidden typing:
 ```
 
 - `--set-pin` sets the page PIN: **exactly 6 digits**, stored only as a salted hash.
-- `--set-govee-key` stores the Govee API key.
+- `--set-govee-key` checks the Govee API key with Govee (one request for the account's device list), then stores it. It prints "Govee accepted the key (N lights on the account)", or "Govee rejected this key. Nothing saved", or that Govee couldn't be asked (saved anyway). Never the key itself. Restart the app afterwards so it loads the new key.
 
 **Where they go:** `APP\data\secrets.json`.
 - The `data\` folder is git-ignored, so they never reach GitHub.

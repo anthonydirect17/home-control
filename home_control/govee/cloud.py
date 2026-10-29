@@ -25,6 +25,25 @@ BASE_URL = "https://openapi.api.govee.com/router/api/v1"
 SCENE_CACHE_SECONDS = 1800
 
 
+class KeyRejected(BackendError):
+    """Govee answered 401: the API key is wrong or no longer valid."""
+
+
+def check_key(api_key, base_url=BASE_URL, timeout=15):
+    """Ask Govee whether a key works, with one request for the account's device list.
+
+    Returns ("accepted", number_of_lights), ("rejected", None) or ("unknown", why), where
+    "unknown" means Govee couldn't be asked (no network, its limit, an error on its side).
+    Nothing returned contains the key.
+    """
+    try:
+        return "accepted", len(CloudBackend(api_key, base_url, timeout).discover())
+    except KeyRejected:
+        return "rejected", None
+    except BackendError as e:
+        return "unknown", str(e)
+
+
 def segment_count(capabilities):
     for cap in capabilities or []:
         if cap.get("instance") != "segmentedColorRgb":
@@ -71,7 +90,7 @@ class CloudBackend(Backend):
                 data = json.load(resp)
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                raise BackendError("Govee rejected the API key") from e
+                raise KeyRejected("Govee rejected the API key") from e
             if e.code == 429:
                 raise BackendError("Govee's request limit was reached; try again in a bit") from e
             raise BackendError(f"Govee cloud error {e.code}") from e

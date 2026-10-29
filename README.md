@@ -47,7 +47,7 @@ python -m home_control --set-govee-key
 python -m home_control --set-guid
 ```
 
-- `--set-govee-key` saves your Govee API key (emailed by Govee).
+- `--set-govee-key` asks Govee whether your API key works, then saves it. A key Govee rejects is not saved, so a working key already saved is kept. If Govee can't be reached, the key is saved and the app's start line shows whether it works. The key is never shown.
 - `--set-guid` saves the Govee Desktop API GUID. It's optional, and only needed for multi-segment effects.
 
 They go into `data/secrets.json` in the app's own folder. `data/` is git-ignored, and the file is locked so only the account running the app can open it. On Windows every value in it is also encrypted with DPAPI for that account; `python -m home_control --check-secrets` shows each secret's name and whether it is encrypted, never the value. On Windows, `--secrets-store credential-manager` uses that account's Credential Manager instead. Environment variables `GOVEE_API_KEY` and `GOVEE_DESKTOP_GUID` also work.
