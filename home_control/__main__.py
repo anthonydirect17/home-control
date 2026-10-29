@@ -3,7 +3,7 @@
     python -m home_control                    control your lights
     python -m home_control --demo             try it with pretend lights
     python -m home_control --set-pin          set the 6-digit page PIN
-    python -m home_control --set-govee-key    save your Govee API key
+    python -m home_control --set-govee-key    save your Govee API key (checked with Govee first)
     python -m home_control --set-guid         save the Govee Desktop API GUID (optional)
     python -m home_control --ring-login       sign in to Ring (email, hidden password, two-step code)
     python -m home_control --check-secrets    list saved secrets and whether each is encrypted (names only)
@@ -39,6 +39,33 @@ def save_secret(name, settings):
         print("Nothing entered; nothing saved.")
         return 1
     print(f"Saved in {save_secret_value(name, value, settings)}.")
+    return 0
+
+
+def set_govee_key(settings):
+    """Save the Govee API key, after asking Govee whether it works. A rejected key is not saved."""
+    from .govee.cloud import check_key
+    from .secrets import SECRETS, save_secret_value
+    key = getpass.getpass(f"{SECRETS['govee-api-key']['label']} (typing is hidden): ").strip()
+    if not key:
+        print("Nothing entered; nothing saved.")
+        return 1
+    print("Checking the key with Govee...")
+    result, detail = check_key(key)
+    if result == "rejected":
+        print("Govee rejected this key. Nothing saved; the key saved before, if any, is unchanged.")
+        print("Check it in the Govee Home app (Profile -> Settings -> Apply for API Key), or apply for a new one.")
+        return 1
+    where = save_secret_value("govee-api-key", key, settings)
+    if result == "accepted":
+        print(f"Govee accepted the key ({detail} lights on the account). Saved in {where}.")
+    else:
+        print(f"Couldn't check the key with Govee ({detail}). Saved in {where} anyway; "
+              "the app's start line will show whether Govee accepts it.")
+    if os.environ.get(SECRETS["govee-api-key"]["env"], "").strip():
+        print(f"Note: the {SECRETS['govee-api-key']['env']} environment variable is set, and the app uses it "
+              "instead of the saved key.")
+    print("Restart the app if it's running, so it uses the new key.")
     return 0
 
 
@@ -277,7 +304,8 @@ def main():
                         help="restart automatically 60 s after any stop or crash (for the auto-start task)")
     parser.add_argument("--set-pin", action="store_true", help="set the 6-digit page PIN and exit")
     parser.add_argument("--set-guid", action="store_true", help="save the Govee Desktop API GUID and exit")
-    parser.add_argument("--set-govee-key", action="store_true", help="save the Govee API key and exit")
+    parser.add_argument("--set-govee-key", action="store_true",
+                        help="check the Govee API key with Govee, save it if it works, and exit")
     parser.add_argument("--ring-login", action="store_true", help="sign in to Ring and exit")
     parser.add_argument("--check-secrets", action="store_true",
                         help="list saved secrets and whether each is encrypted (names only), then exit")
@@ -299,7 +327,7 @@ def main():
     if args.set_guid:
         return save_secret("govee-desktop-guid", store.get("settings"))
     if args.set_govee_key:
-        return save_secret("govee-api-key", store.get("settings"))
+        return set_govee_key(store.get("settings"))
     if args.ring_login:
         from .ring import TOKEN_SECRET, ring_login
         from .secrets import save_secret_value

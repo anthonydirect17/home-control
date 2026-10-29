@@ -281,3 +281,66 @@ def test_hub_falls_back_to_cloud_when_lan_command_fails(cloud_url, tmp_path):
     assert sorted(dev.routes) == ["cloud", "lan"]
     assert controller.power("device:Bedroom", True) == {}
     assert any(x[1].endswith("/device/control") for x in FakeGovee.log)
+
+
+# ---------- --set-govee-key checks the key with Govee before saving it ----------
+
+def test_check_key_accepted_rejected_unknown(cloud_url):
+    from home_control.govee.cloud import check_key
+    assert check_key("good-key", base_url=cloud_url) == ("accepted", len(DEVICES["data"]))
+    assert check_key("wrong", base_url=cloud_url) == ("rejected", None)
+    result, why = check_key("good-key", base_url="http://127.0.0.1:9", timeout=2)  # nothing listens there
+    assert result == "unknown" and "couldn't reach" in why
+
+
+def _set_key(monkeypatch, cloud_url, typed):
+    import sys
+
+    from home_control import __main__ as cli
+    from home_control import secrets
+    from home_control.govee import cloud
+    real = cloud.check_key
+    monkeypatch.setattr(cloud, "check_key", lambda key: real(key, base_url=cloud_url, timeout=2))
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: typed)
+    monkeypatch.setattr(sys, "argv", ["home_control", "--data", secrets._data_dir, "--set-govee-key"])
+    return cli.main()
+
+
+def test_set_govee_key_saves_an_accepted_key(monkeypatch, cloud_url, capsys):
+    from home_control import secrets
+    assert _set_key(monkeypatch, cloud_url, "good-key") == 0
+    out = capsys.readouterr().out
+    assert f"Govee accepted the key ({len(DEVICES['data'])} lights on the account). Saved in" in out
+    assert "Restart the app" in out and "good-key" not in out
+    assert secrets.get_secret("govee-api-key", {})[0] == "good-key"
+
+
+def test_set_govee_key_never_saves_a_rejected_key(monkeypatch, cloud_url, capsys):
+    from home_control import secrets
+    secrets.save_secret_value("govee-api-key", "good-key", {})
+    assert _set_key(monkeypatch, cloud_url, "wrong-key") == 1
+    out = capsys.readouterr().out
+    assert "Govee rejected this key. Nothing saved; the key saved before, if any, is unchanged." in out
+    assert "wrong-key" not in out
+    assert secrets.get_secret("govee-api-key", {})[0] == "good-key"  # the working key is kept
+
+
+def test_set_govee_key_saves_when_govee_cannot_be_asked(monkeypatch, capsys):
+    from home_control import secrets
+    assert _set_key(monkeypatch, "http://127.0.0.1:9", "maybe-key") == 0
+    out = capsys.readouterr().out
+    assert "Couldn't check the key with Govee (couldn't reach Govee's cloud" in out and "Saved in" in out
+    assert "maybe-key" not in out
+    assert secrets.get_secret("govee-api-key", {})[0] == "maybe-key"
+
+
+def test_set_govee_key_mentions_an_overriding_env_var(monkeypatch, cloud_url, capsys):
+    monkeypatch.setenv("GOVEE_API_KEY", "from-env")
+    assert _set_key(monkeypatch, cloud_url, "good-key") == 0
+    out = capsys.readouterr().out
+    assert "GOVEE_API_KEY environment variable is set" in out and "from-env" not in out
+
+
+def test_set_govee_key_with_nothing_typed(monkeypatch, cloud_url, capsys):
+    assert _set_key(monkeypatch, cloud_url, "  ") == 1
+    assert "Nothing entered; nothing saved." in capsys.readouterr().out
