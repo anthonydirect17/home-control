@@ -112,7 +112,8 @@ The task it creates:
 | Setting | Value |
 |---|---|
 | Name | `HomeControl`. Keep this name: ServerWatch's restart button looks for it. |
-| Trigger | 1 minute after the owner's account signs in (which happens automatically after a restart), then repeated every minute. A running app is left alone ("if already running: ignore new"); if its process was ended, the next minute starts it again. |
+| Triggers | Two, each repeating every minute with no end (`StopAtDurationEnd` False): (1) 1 minute after the owner's account signs in, which happens automatically after a restart; (2) once, 1 minute after the script registers the task, so the repeat runs at once without waiting for the next sign-in. A running app is left alone ("if already running: ignore new"; `LastTaskResult` 0x800710E0 is that, not an error); if its process was ended, the next minute starts it again. |
+| Hidden | yes: the task is hidden in Task Scheduler's list (the app itself never shows a window either) |
 | Runs | in that signed-in session (logon type Interactive, run level Limited). No password is stored, and saved logins are readable. |
 | Window | none: it runs `.venv\Scripts\pythonw.exe` |
 | Address | `--host tailscale`: the machine's current Tailscale address, looked up at every start |
@@ -120,7 +121,7 @@ The task it creates:
 | Stopping on purpose | `Disable-ScheduledTask -TaskName HomeControl`, then end the task. Otherwise the minute repeat starts it again. `Enable-ScheduledTask` and `Start-ScheduledTask` bring it back. |
 | Priority | below normal |
 | Time limit | none |
-| Log | `APP\logs\home-control.log` (1 MB × 3). IP addresses are masked in everything written to it, error reports included. |
+| Log | `APP\logs\home-control.log` (1 MB × 3). IP addresses are masked in everything written to it, error reports included. It rotates while the app runs. If another program holds it open (an editor, `Get-Content -Wait`), rotation waits and is tried again later; read it with `Get-Content -Tail 50` or `Select-String`, which open and close it. |
 | Execution policy | `-ExecutionPolicy Bypass` applies to this one script run only; the machine's policy isn't changed. The scripts haven't been run yet; read them first. |
 
 Undo: `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1`. Code, data and secrets are left as they are.
