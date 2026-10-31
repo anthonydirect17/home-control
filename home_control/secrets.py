@@ -37,12 +37,15 @@ SECRETS = {
     # Ring's sign-in token. Ring rotates it; the app saves each new one at once.
     "ring-refresh-token": {"env": "RING_REFRESH_TOKEN", "target": "home-control/ring-refresh-token",
                            "label": "Ring sign-in token"},
+    # The app's own ADB key for the Fire TV sticks; made by --firetv-pair, never typed.
+    "firetv-adb-key": {"env": "HOME_CONTROL_FIRETV_KEY", "target": "home-control/firetv-adb-key",
+                       "label": "Fire TV control key"},
     # Random key that signs the "remember this device" cookies; created automatically.
     "session-key": {"env": "HOME_CONTROL_SESSION_KEY", "target": "home-control/session-key",
                     "label": "cookie signing key"},
 }
 SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin",
-             "ring-refresh-token": "--ring-login"}
+             "ring-refresh-token": "--ring-login", "firetv-adb-key": "--firetv-pair"}
 
 MARKER = "dpapi:"  # an encrypted value is MARKER + base64 of the DPAPI output
 STORE_CREDMAN = "credential-manager"
