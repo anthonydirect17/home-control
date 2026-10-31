@@ -336,9 +336,15 @@ def main():
                         help="find a Fire TV stick on the home network, pair it (approve on the TV), and exit")
     parser.add_argument("--check-secrets", action="store_true",
                         help="list saved secrets and whether each is encrypted (names only), then exit")
+    parser.add_argument("--bridge-link", metavar="FILE",
+                        help="sit behind the Bridge: accept only requests it signed, using the link file "
+                             "it wrote for Home Control (needs --host 127.0.0.1)")
     parser.add_argument("--secrets-store", choices=["credential-manager", "file"],
                         help="choose where secrets are kept, then exit")
     args = parser.parse_args()
+    if args.bridge_link and args.host != "127.0.0.1":
+        print("Behind the Bridge, Home Control listens on this PC only: use --host 127.0.0.1 with --bridge-link.")
+        return 2
 
     from .secrets import set_data_dir
     from .store import Store
@@ -387,6 +393,17 @@ def main():
         time.sleep(RESTART_DELAY)
 
 
+def read_bridge_link(path):
+    """The secret the Bridge shares with Home Control, from its link file; None when not behind it."""
+    if not path:
+        return None
+    from .fusionkit import link
+    try:
+        return link.read_link(path, "home")
+    except ValueError as e:
+        raise RuntimeError(str(e)) from None
+
+
 def serve(args, store):
     from .controller import Controller, StatePoller
     from .hub import Hub
@@ -395,6 +412,7 @@ def serve(args, store):
     from .server import create_app
 
     host = resolve_host(args.host)  # raises if Tailscale isn't up yet; --keep-running retries
+    bridge_secret = read_bridge_link(args.bridge_link)  # raises with a plain reason; --keep-running retries
     from .events import EventBus
 
     started_at = time.time()
@@ -438,8 +456,11 @@ def serve(args, store):
 
     import uvicorn
     app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus, services=services,
-                     modes=modes, sirens=sirens, rules=rules)
-    if args.host.lower() == "tailscale":
+                     modes=modes, sirens=sirens, rules=rules, bridge_secret=bridge_secret)
+    if bridge_secret is not None:
+        url = None
+        print(f"Home Control is running behind the Bridge (this PC only, port {args.port})")
+    elif args.host.lower() == "tailscale":
         # The address itself stays out of the log.
         url = None
         print(f"Home Control is running on this machine's Tailscale address, port {args.port}")

@@ -28,14 +28,17 @@ Personal details (device names, counts, addresses, keys) are deliberately **not*
   - arming and disarming from the app, with the PIN;
   - the `allow_app_arming` switch starts off, and the owner turns it on in the app with the PIN;
   - rules may arm, change or disarm, and need the PIN when saved or pressed.
+- **Behind the Bridge** (the Bridge and the Fusion kit live in their own private repo):
+  - `--bridge-link FILE --host 127.0.0.1`: Home Control listens on this PC only and accepts only requests the Bridge signed (`fusionkit/link.py`, copied from the kit). Its health feed stays open.
+  - A signed request counts as signed in; the PIN for each alarm or siren action is still asked every time.
+  - The page uses relative URLs, so it works at `/` on its own and at `/home/` behind the Bridge.
+  - `install-autostart.ps1 -BindAddress 127.0.0.1 -BridgeLink <file>` sets it up.
+- **Decided later on 2026-10-31 (the owner):** rules may sound the base station siren too (PIN on save and press); Sensi uses the one-time browser step; no push alerts for now; the Energy section (the electric company's account) is in phase 1.
 - **Waiting on the owner:**
-  - the base station siren in rules (not used);
   - the Ring plan;
-  - the push service;
-  - Sensi's sign-in method (its app client ID and secret are typed into a hidden prompt, never put in the repo);
   - the Fire TV models;
   - the Workshop's file home;
-  - the Bridge's private repo.
+  - which energy plug (one is proven on the box before any card relies on it).
 - **Status:** pull request 15 holds all of this, left open for the cloud coordinator's re-review and the owner's GO. Nothing in it is on the server yet.
 
 ---

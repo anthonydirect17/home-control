@@ -1,7 +1,12 @@
 """Local web server: the JSON API plus the control page.
 
-Everything under /api/ needs a remembered device (the page PIN), except
+On its own, everything under /api/ needs a remembered device (the page PIN), except
 /api/health (for ServerWatch; no names, addresses or secrets) and /api/auth/*.
+
+Behind the Bridge (--bridge-link), the app listens on 127.0.0.1 only and every request except
+/api/health must carry the Bridge's signature (fusion-link/1, fusionkit/link.py). The Bridge
+holds the one sign-in, so a signed request counts as signed in. The PIN for each alarm or
+siren action is still asked for every time, as before.
 """
 
 import os
@@ -17,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, health_feed, patterns, scheduler as sched
+from .fusionkit import link
 from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
 from .ring import CameraSirens, RingError
@@ -195,7 +201,7 @@ def home_feed(controller, ring=None, services=(), started_at=None, now=None):
 
 
 def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None,
-               modes=None, sirens=None, rules=None):
+               modes=None, sirens=None, rules=None, bridge_secret=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
     services = dict(services or {})  # key -> PollingService (sonos, firetv, pcs, ...)
@@ -213,7 +219,13 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.middleware("http")
     async def require_pin(request: Request, call_next):
-        path = request.url.path
+        path = request.scope["path"]   # the same path the router uses
+        if bridge_secret is not None and path != "/api/health":
+            who = link.verify(bridge_secret, request.method, link.signed_path(request.scope), request.headers)
+            if who is None or who["route"] != "tailscale":
+                return JSONResponse({"detail": "Home Control is reached through the Bridge"}, status_code=401)
+            request.state.who = who
+            return await call_next(request)   # signed in at the Bridge
         if path.startswith("/api/") and path not in OPEN_PATHS and not OPEN_STOP.fullmatch(path):
             if not gate.cookie_ok(request.cookies.get(COOKIE_NAME)):
                 return JSONResponse({"detail": "PIN required", "pin_required": True}, status_code=401)
@@ -409,8 +421,10 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.get("/api/auth/status")
     def auth_status(request: Request):
-        return {"required": gate.required, "pin_set": gate.pin_set,
-                "signed_in": gate.cookie_ok(request.cookies.get(COOKIE_NAME)), "locked_for": gate.locked_for()}
+        via_bridge = getattr(request.state, "who", None) is not None
+        return {"required": gate.required, "pin_set": gate.pin_set, "via_bridge": via_bridge,
+                "signed_in": via_bridge or gate.cookie_ok(request.cookies.get(COOKIE_NAME)),
+                "locked_for": gate.locked_for()}
 
     @app.post("/api/auth/login")
     def login(body: PinBody, response: Response):

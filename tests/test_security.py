@@ -65,7 +65,7 @@ def test_api_locked_until_pin_entered_and_device_remembered(app_env):
     assert r.status_code == 401 and r.json()["pin_required"]
     assert client.get("/").status_code == 200  # the page itself loads, showing the PIN screen
     assert client.get("/api/auth/status").json() == {"required": True, "pin_set": True,
-                                                      "signed_in": False, "locked_for": 0}
+                                                      "signed_in": False, "locked_for": 0, "via_bridge": False}
 
     r = client.post("/api/auth/login", json={"pin": PIN})
     assert r.status_code == 200

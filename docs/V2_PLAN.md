@@ -25,7 +25,7 @@
 
 | Phase | What | Needs on the box |
 |---|---|---|
-| **1** | The Fusion look; lights (V1 plus the Light Studio); Sonos; Fire TV; PC status; the Bridge with the HOME tile; the health feed | One port block for the Bridge (section 6). No new inbound rule for the devices |
+| **1** | The Fusion look; lights (V1 plus the Light Studio); Sonos; Fire TV; PC status; the Bridge with the HOME tile; the health feed; **the Energy section** (the electric company's account data, Anthony's call 2026-10-31; section 3.10) | One port block for the Bridge (section 6). No new inbound rule for the devices. Energy: outbound HTTPS only |
 | **2** | Ring (events, motion, doorbell, snapshots, history, the Alarm), the garage from a Ring camera's picture, Sensi, the rules engine and Alerts screen, Sonos sounds and spoken alerts, push alerts | Ring helper packages; one LAN rule for Sonos sounds |
 | **3** | Ring live view; the Workshop tile; an Alexa skill if Anthony asks | By their own cards |
 
@@ -213,7 +213,19 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
 - **The app never starts a print,** and has no pause or stop (those stay in Bambu Handy).
 - **The library** of print files: **waiting on the 3D print session's inventory** and Anthony's decision on where the files live. The brief's proposal is a "Workshop" folder in Anthony's Google Drive.
 - **The ledger, filament shelf, maintenance and queue** are data the app keeps itself.
-- **Energy and cost per print:** from the printer's Govee energy plug, once its readings are confirmed readable.
+- **One P1S with one 4-slot AMS** (Anthony, 2026-10-31). An earlier note of two printers was wrong.
+- **Energy and cost per print:** from an energy-monitoring plug on the printer, once one is proven on the box (section 3.10).
+
+### 3.10 Energy (phase 1)
+
+- **The house's usage and cost,** from Anthony's account with the electric company: daily usage and cost, and hourly usage for the last 7 days (all the company's site shows).
+  - The company has no public API and no export. The client is modelled on the one maintained community integration, with credit, as for Sensi. It is unofficial: a change to the site can break it, and the page then shows the data's age and "not answering" plainly.
+  - It reads once a day and **keeps its own history,** so the history grows past 7 days.
+  - The login is typed by Anthony into a hidden prompt and stored encrypted, like the other secrets.
+  - Outbound HTTPS only.
+- **Where it shows:** an **Energy** section inside the HOME tile: today, the month so far, cost, a bill forecast and the highest-use hours. No new tile.
+- **Not part of the 0.5.2 update,** which stays at 8511212.
+- **Energy-monitoring plugs** (on the server and the printer) are being chosen by Anthony. Candidates the app can read locally with no cloud: Shelly Plus Plug US (its published local API) and TP-Link Kasa KP125 or KP115 (`python-kasa`, no sign-in). **No card relies on a plug until one is proven on the box:** the app reads its watts on the home network, outbound only; if discovery needs an inbound reply, the card says so.
 
 ## 4. Rules and alerts (phase 2)
 
@@ -275,7 +287,7 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
   - `/cruise/`
   - `/studio/`
   - `/workshop/`
-- **Each app keeps running as its own program,** on 127.0.0.1 only. The Bridge passes its traffic through: pages, API calls, live updates (WebSocket and server-sent events) and images.
+- **Each app keeps running as its own program,** on 127.0.0.1 only. The Bridge passes its traffic through: pages, API calls, streamed answers and images. WebSockets do not pass through yet; no app needs them today.
   - One app stopping never takes the others down: its tile turns red, from its health feed.
   - **As each app moves in,** its own network opening (8780, 8820, 8811 and so on) closes by card.
 - **The Desk stays separate.** The Bridge shows a small "The Desk: healthy" light.
@@ -379,12 +391,12 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 | Secret | Phase | Notes |
 |---|---|---|
 | govee-api-key | 1 | Since V1 |
-| page-pin-hash | 1 | Moves to the Bridge |
-| session-key | 1 | Made by the app; moves to the Bridge |
+| page-pin-hash | 1 | The Bridge has its own for the door. HOME keeps its own for the PIN asked at each alarm or siren action, until HOME's Fusion screens use the Bridge's one-time confirmations |
+| session-key | 1 | Made by the app. Behind the Bridge, HOME's own cookie is not needed |
+| the electric company's login | 1 | Energy section |
 | firetv-adb-key | 1 | Made by the app at pairing; never typed |
 | ring-refresh-token | 2 | Since V1 |
-| Sensi token | 2 | |
-| push service secret | 2 | |
+| Sensi token | 2 | From the one-time browser step |
 | Bambu access code | 3 | |
 | Bridge's per-app signing secrets | 1 | |
 
@@ -415,7 +427,7 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
    - this plan, to both coordinators;
    - pull request 15: the device layer, house modes, sirens, the garage reader and the rules engine. It had an independent review, and the cloud coordinator's review (changes requested, now made). It is **left open** until the re-review and Anthony's GO.
 2. **Next, in code, without the box:** Sensi's client, once Anthony chooses the sign-in (section 3.6).
-3. **After both coordinators have read this plan:** the Fusion kit and the Bridge (in the new private repo, once Anthony creates it), then HOME's screens in the Fusion look: the dashboard, the Light Studio, Alerts.
+3. **Built, in review:** the Fusion kit and the Bridge (pull request 1 in the Bridge's private repo), and HOME's side of sitting behind it (this pull request: `--bridge-link`, relative URLs, the signature check). **Next:** HOME's screens in the Fusion look (the dashboard, the Light Studio, Alerts, Energy) and the Energy client.
 4. **Cards, in Anthony's server order:**
    - the 0.5.2 update card (already written);
    - Ring Part B;
@@ -425,8 +437,7 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 ## 8. Asks
 
 **The server's coordinator:**
-- a port block for the Bridge (8840 upward);
-- reading this plan's box parts (section 6) before I write the phase 1 card.
+- done: the port block (8840 to 8849) and section 6, approved for the box.
 
 **Cloud coordinator:** the re-review of pull request 15 after the changes it asked for. Its rulings on The Desk's health light (section 5.1) and Sensi's client secret (section 3.6) are applied.
 
@@ -436,10 +447,15 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 - The garage state stays on the health route.
 
 **Anthony: still open** (nothing is built for these until he decides):
-1. **The base station siren:** keep it as a manual PIN button and out of rules (proposed), or something else.
-2. **The Ring plan** (arming from an app needs one).
-3. **The Fire TV models** (any on Vega OS cannot be paired).
-4. **Sensi:** the one-time browser step (proposed), or Seam (paid).
-5. **Push alerts:** ntfy or Pushover, later.
-6. **The Workshop's print-file home:** waiting on the 3D print session's inventory.
-7. **The new private repo** for the Bridge and the kit: Anthony creates it.
+1. **The Ring plan** (arming from an app needs one).
+2. **The Fire TV models** (any on Vega OS cannot be paired).
+3. **The Workshop's print-file home** and the other Workshop decisions (brief section 9).
+4. **Energy plugs:** which one; one is proven on the box first.
+
+**Anthony: decided later on 2026-10-31.**
+- **The base station siren:** rules may use it too, with the PIN on save and press, like the camera sirens.
+- **Sensi:** the one-time browser step.
+- **Push alerts: none for now.** Ring already alerts Anthony's phone when the alarm sounds; this app is for doing things and convenience.
+- **One P1S** with one AMS.
+- **The Energy section** is part of phase 1.
+- The Bridge's private repo exists.

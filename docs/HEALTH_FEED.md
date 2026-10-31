@@ -2,7 +2,7 @@
 
 Every app behind the Bridge answers one small route in one shape. The Bridge's tiles and the Watcher read only this. No app invents its own.
 
-This file and `home_control/health_feed.py` move into the shared kit repo when it exists. Until then they live here, and Home Control is the first app to answer in this shape.
+The code is the Fusion kit's `fusionkit/health.py`, copied into `home_control/fusionkit/` with the rest of the kit's Python folder. Home Control was the first app to answer in this shape.
 
 ## The route
 
