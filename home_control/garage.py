@@ -125,6 +125,10 @@ class GarageWatcher(PollingService):
         old = self.config()
         if old.get("camera_id") != camera_id or old.get("box") != [x0, y0, x1, y1]:
             self._write_refs({})  # references belong to one camera and one corner
+            with self._lock:      # and so do the readings
+                self.reading = {"state": None, "checked_at": None, "distances": {}}
+                self.last_sure = None
+                self.since = None
         self.store.update_settings({"garage": {"camera_id": str(camera_id), "box": [x0, y0, x1, y1]}})
 
     def save_reference(self, kind, jpeg=None):
@@ -188,8 +192,10 @@ class GarageWatcher(PollingService):
         with self._lock:
             self.reading = {"state": state, "checked_at": now, "distances": d}
             if state != "unknown":
-                changed = self.last_sure is None or self.last_sure["state"] != state
-                if changed:
+                # The first sure reading after a start (or a new camera) only sets the state: it is
+                # not a change, so a "garage open" rule doesn't fire on every restart.
+                changed = self.last_sure is not None and self.last_sure["state"] != state
+                if changed or self.last_sure is None:
                     self.since = now
                 self.last_sure = {"state": state, "at": now}
             else:

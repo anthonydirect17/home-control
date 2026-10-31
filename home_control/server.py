@@ -293,6 +293,13 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
             raise HTTPException(502, str(e))
         return modes.state()
 
+    @app.post("/api/mode/app-arming")
+    def set_app_arming(body: OnPinBody):
+        """Anthony's switch for arming and disarming from the app (off at first). The PIN, every time."""
+        confirm_with_pin(gate, body.pin)
+        store.update_settings({"allow_app_arming": bool(body.on)})
+        return {"app_arming": bool(body.on)}
+
     def garage():
         svc = services.get("garage")
         if svc is None:
@@ -668,8 +675,8 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         if body.mode not in ("none", "some", "all"):
             raise HTTPException(400, "mode must be none (disarmed), some (home) or all (away)")
         if not store.get("settings").get("allow_app_arming"):
-            raise HTTPException(403, "Arming and disarming from this app is switched off until Anthony decides "
-                                     "(V2 plan, section 3.5). Use the Ring app or the keypad.")
+            raise HTTPException(403, "Arming and disarming from this app is switched off. Turn it on in the "
+                                     "app with your PIN, or use the Ring app or the keypad.")
         confirm_with_pin(gate, body.pin)
         return ring_call("post", f"/locations/{quote(lid, safe='')}/mode", {"mode": body.mode})
 

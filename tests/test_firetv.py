@@ -177,9 +177,32 @@ def test_describe_keeps_only_amazon_devices():
               b'<manufacturer>Amazon</manufacturer><modelName>AFTKA</modelName><UDN>uuid:abc</UDN></device></root>')
     other = b'<root><device><friendlyName>TV</friendlyName><manufacturer>Roku</manufacturer></device></root>'
     pages = {"http://10.0.0.50:60000/dd.xml": amazon, "http://10.0.0.9:8060/dial": other}
-    found = find_sticks(locate=lambda: list(pages), fetch=pages.__getitem__)
+    found = find_sticks(locate=lambda: [("http://10.0.0.50:60000/dd.xml", "10.0.0.50"),
+                                        ("http://10.0.0.9:8060/dial", "10.0.0.9")], fetch=pages.__getitem__)
     assert found == [{"name": "Living Room", "model": "AFTKA", "udn": "uuid:abc", "ip": "10.0.0.50"}]
-    assert describe("http://x/broken", fetch=lambda url: b"<not xml") is None
+    assert describe("http://10.0.0.50/broken", "10.0.0.50", fetch=lambda url: b"<not xml") is None
+
+
+@pytest.mark.parametrize("location, source", [
+    ("http://10.0.0.66:60000/dd.xml", "10.0.0.50"),      # points at another host than the one that replied
+    ("https://10.0.0.50:60000/dd.xml", "10.0.0.50"),     # not plain http
+    ("file:///etc/passwd", "10.0.0.50"),
+    ("http://8.8.8.8/dd.xml", "8.8.8.8"),                # not a home-network address
+    ("http://127.0.0.1/dd.xml", "127.0.0.1"),
+    ("http://169.254.1.1/dd.xml", "169.254.1.1"),
+    ("http://stick.local/dd.xml", "10.0.0.50"),          # a name, not the address
+])
+def test_unsafe_answers_are_ignored_before_any_fetch(location, source):
+    def fetch(url):
+        raise AssertionError("must not fetch")
+    assert describe(location, source, fetch=fetch) is None
+
+
+def test_redirects_are_not_followed():
+    import urllib.request
+    handler = firetv._NoRedirects()
+    assert handler.redirect_request(None, None, 302, "Found", {}, "http://evil/") is None
+    assert isinstance(handler, urllib.request.HTTPRedirectHandler)
 
 
 def test_pairing_reports_a_key_it_cant_save(store):

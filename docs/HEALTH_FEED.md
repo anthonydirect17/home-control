@@ -21,9 +21,9 @@ This file and `home_control/health_feed.py` move into the shared kit repo when i
   "name": "Home Control",
   "version": "0.6.0",
   "status": "warn",
-  "summary": "6 of 9 lights on; not answering: Sonos",
+  "summary": "3 of 5 lights on; not answering: Sonos",
   "values": [
-    {"label": "Lights", "value": "6 of 9 on", "status": "ok"},
+    {"label": "Lights", "value": "3 of 5 on", "status": "ok"},
     {"label": "Sonos", "value": "not answering", "status": "down"}
   ],
   "checked_at": "2026-10-31T21:47:00+00:00",
@@ -49,7 +49,7 @@ An app may add its own fields beside these, as Home Control does with V1's `conn
 ## Never in the feed
 
 - **Addresses:** IP addresses (v4 or v6) and e-mail addresses.
-- **Names:** account names and device names. Write "6 of 9 lights on", not a light's name.
+- **Names:** account names and device names. Write "3 of 5 lights on", not a light's name.
 - **Secrets,** tokens or anything from the secrets file.
 
 `check_feed(feed, private_words=[...])` returns the problems as plain sentences, or an empty list. Each app's tests run it on the app's own feed, passing the names that app knows. The Bridge runs it too, and shows a feed that fails as `warn`, with "Health feed has a problem".

@@ -206,13 +206,19 @@ class RingBridge:
 class CameraSirens:
     """Camera sirens that this app stops itself after a set time (30 s by default).
 
-    Ring publishes no length for a camera siren started from an app, so a siren is never
-    left to run on Ring's own timer. Turning it off is tried a few times. Only cameras that
-    have a siren take one; the base station siren is not handled here (V2 plan, section 3.5).
+    Ring publishes no length for a camera siren started from an app, so a siren is never left
+    to run on Ring's own timer:
+    - the stop timer is set before the "on" call, so a call that fails after Ring acted is
+      still followed by an "off";
+    - turning it off is tried a few times;
+    - running sirens and their deadlines are kept in a small file (state_path). If the app is
+      stopped mid-siren, the next start turns off any that are past due as soon as Ring is
+      connected (the "ready" event), and re-times the rest.
+    Only cameras that have a siren take one; the base station siren is not handled here.
     """
 
     def __init__(self, ring, seconds=30, timer=threading.Timer, log=print, retries=3, retry_wait=2.0,
-                 sleep=time.sleep):
+                 sleep=time.sleep, state_path=None, bus=None, clock=time.time):
         self.ring = ring
         self.seconds = seconds
         self.timer = timer
@@ -220,16 +226,61 @@ class CameraSirens:
         self.retries = retries
         self.retry_wait = retry_wait
         self.sleep = sleep
-        self._timers = {}   # camera id -> (timer, token)
+        self.state_path = state_path
+        self.clock = clock
+        self._timers = {}   # camera id -> (timer, token, deadline)
         self._lock = threading.Lock()
+        if bus is not None:
+            bus.subscribe(self._on_event)
 
     def _path(self, cid):
         from urllib.parse import quote
         return f"/cameras/{quote(str(cid), safe='')}/siren"
 
-    def start(self, cid, seconds=None):
-        seconds = max(1, min(int(seconds or self.seconds), 120))
-        self.ring.post(self._path(cid), {"on": True})
+    # --- the deadlines file ---
+
+    def _save(self):
+        if not self.state_path:
+            return
+        with self._lock:
+            data = {cid: entry[2] for cid, entry in self._timers.items()}
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.state_path)), exist_ok=True)
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, self.state_path)
+        except OSError as e:
+            self.log(f"Ring: couldn't note a running siren: {e}")
+
+    def _on_event(self, event):
+        if event.get("source") == "ring" and event.get("kind") == "ready":
+            threading.Thread(target=self.recover, daemon=True, name="siren-recover").start()
+
+    def recover(self):
+        """Sirens a previous run of the app left on: off if past due, else timed again."""
+        if not self.state_path:
+            return
+        try:
+            with open(self.state_path, encoding="utf-8") as f:
+                left = json.load(f)
+        except (OSError, ValueError):
+            return
+        now = self.clock()
+        for cid, deadline in (left or {}).items():
+            with self._lock:
+                if cid in self._timers:
+                    continue
+            remaining = float(deadline) - now
+            if remaining <= 0:
+                self._siren_off(cid)
+            else:
+                self._arm(cid, remaining)
+        self._save()
+
+    # --- on and off ---
+
+    def _arm(self, cid, seconds):
         token = object()
         t = self.timer(seconds, self._off, args=(cid, token))
         t.daemon = True
@@ -237,8 +288,14 @@ class CameraSirens:
             old = self._timers.pop(cid, None)
             if old:
                 old[0].cancel()
-            self._timers[cid] = (t, token)
+            self._timers[cid] = (t, token, self.clock() + seconds)
         t.start()
+
+    def start(self, cid, seconds=None):
+        seconds = max(1, min(int(seconds or self.seconds), 120))
+        self._arm(cid, seconds)  # first: an "on" that fails after Ring acted is still followed by "off"
+        self._save()
+        self.ring.post(self._path(cid), {"on": True})
         return seconds
 
     def _off(self, cid, token=None):
@@ -248,6 +305,7 @@ class CameraSirens:
                 return  # an older timer: the siren was started again since
             self._timers.pop(cid, None)
         self._siren_off(cid)
+        self._save()
 
     def _siren_off(self, cid):
         for attempt in range(self.retries):
@@ -266,7 +324,9 @@ class CameraSirens:
             entry = self._timers.pop(cid, None)
         if entry:
             entry[0].cancel()
-        if not self._siren_off(cid):
+        ok = self._siren_off(cid)
+        self._save()
+        if not ok:
             raise RingError("couldn't stop the camera siren")
 
     def stop_all(self):

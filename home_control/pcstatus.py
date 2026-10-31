@@ -9,7 +9,7 @@ Which PCs and what they are called come from the private settings (data/settings
 
     "pcs": [
       {"label": "This server", "this_machine": true},
-      {"label": "Home PC", "tailscale_name": "<that PC's name in Tailscale>"}
+      {"label": "Office PC", "tailscale_name": "<that PC's name in Tailscale>"}
     ]
 """
 

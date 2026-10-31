@@ -412,7 +412,7 @@ def serve(args, store):
         from .modes import HouseModes
         from .ring import CameraSirens
         modes = HouseModes(store, bus, ring)
-        sirens = CameraSirens(ring)
+        sirens = CameraSirens(ring, state_path=os.path.join(args.data, "sirens.json"), bus=bus)
         services["garage"] = GarageWatcher(store, ring, bus, args.data)
     from .rules import RulesEngine
     rules = RulesEngine(store, bus, controller, services=services, sirens=sirens, ring=ring, modes=modes)
@@ -451,18 +451,24 @@ def serve(args, store):
     try:
         uvicorn.run(app, host=host, port=args.port, log_level="warning")
     finally:
-        scheduler.stop()
-        poller.stop()
-        rules.stop()            # first, while the Ring helper can still turn sirens off
-        if sirens:
-            sirens.stop_all()
-        if ring:
-            ring.stop()
-        for svc in services.values():
-            svc.stop()
-        controller.stop_all()
-        hub.close()
+        shutdown(scheduler, poller, rules, sirens, ring, services, controller, hub)
     return 0
+
+
+def shutdown(scheduler, poller, rules, sirens, ring, services, controller, hub):
+    """Stop everything, in an order that never leaves a siren on: rules and sirens go first,
+    while the Ring helper can still turn a siren off; the helper after them."""
+    for step in (scheduler.stop, poller.stop, rules.stop,
+                 sirens.stop_all if sirens else None,
+                 ring.stop if ring else None,
+                 *[svc.stop for svc in services.values()],
+                 controller.stop_all, hub.close):
+        if step is None:
+            continue
+        try:
+            step()
+        except Exception as e:  # one part failing to stop never keeps the rest running
+            print(f"While stopping: {e}")
 
 
 if __name__ == "__main__":

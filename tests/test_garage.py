@@ -119,11 +119,11 @@ def test_not_set_up_then_references_then_reading(setup):
     w.save_reference("closed")
     assert w.poll_once()
     assert w.health_text() == "closed" and w.state()["references"] == {"open": 1, "closed": 1}
-    assert [e["kind"] for e in bus.recent(source="garage")] == ["garage-closed"]
+    assert bus.recent(source="garage") == []   # the first reading after a start is not a change
     ring.frame = picture("open", light=100)
     w.poll_once()
     assert w.health_text() == "open"
-    assert [e["kind"] for e in bus.recent(source="garage")] == ["garage-open", "garage-closed"]
+    assert [e["kind"] for e in bus.recent(source="garage")] == ["garage-open"]
 
 
 def test_references_are_capped_and_reset_when_the_corner_moves(setup):
@@ -183,3 +183,12 @@ def test_camera_trouble_marks_it_down(setup):
     ring.fail = True
     assert not w.poll_once()
     assert "no picture from the garage camera" in w.status["error"]
+
+
+def test_a_new_camera_starts_with_no_reading(setup):
+    w, ring, bus, clock, timers, store = setup
+    ready(w, ring)
+    w.poll_once()
+    assert w.health_text() == "closed"
+    w.setup("9", BOX)
+    assert w.last_sure is None and w.reading["state"] is None

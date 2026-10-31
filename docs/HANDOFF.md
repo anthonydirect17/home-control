@@ -24,15 +24,19 @@ Personal details (device names, counts, addresses, keys) are deliberately **not*
   - `garage.py`: status from a camera's picture;
   - `rules.py`: when, only if, then, until;
   - `ring.py` `CameraSirens`: stopped by the app after 30 s.
+- **The alarm (the owner, 2026-10-31):**
+  - arming and disarming from the app, with the PIN;
+  - the `allow_app_arming` switch starts off, and the owner turns it on in the app with the PIN;
+  - rules may arm, change or disarm, and need the PIN when saved or pressed.
 - **Waiting on the owner:**
-  - arming and disarming from the app (`allow_app_arming` stays off);
   - the base station siren in rules (not used);
+  - the Ring plan;
   - the push service;
-  - Sensi (the method, and where Sensi's app client secret goes);
+  - Sensi's sign-in method (its app client ID and secret are typed into a hidden prompt, never put in the repo);
   - the Fire TV models;
   - the Workshop's file home;
   - the Bridge's private repo.
-- **Status:** pull request 15 holds all of this, left open for the cloud coordinator's review. Nothing in it is on the server yet.
+- **Status:** pull request 15 holds all of this, left open for the cloud coordinator's re-review and the owner's GO. Nothing in it is on the server yet.
 
 ---
 

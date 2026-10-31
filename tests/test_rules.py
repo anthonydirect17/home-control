@@ -82,8 +82,6 @@ def test_validate():
                      ({"name": "x", "when": {"kind": "time", "time": "25:00"}, "then": [{"do": "alert"}]}, "time"),
                      ({"name": "x", "when": {"kind": "motion"}}, "at least one action"),
                      ({"name": "x", "when": {"kind": "motion"}, "then": [{"do": "explode"}]}, "'do'"),
-                     ({"name": "x", "when": {"kind": "motion"}, "then": [{"do": "mode", "mode": "home"}]},
-                      "never disarm"),
                      ({"name": "x", "when": {"kind": "motion"}, "then": [{"do": "alert"}],
                        "only_if": {"modes": ["PARTY"]}}, "house mode"),
                      ({"name": "x", "when": {"kind": "motion"}, "then": [{"do": "alert"}],
@@ -197,15 +195,67 @@ def test_garage_and_house_mode_triggers_and_buttons(env):
         engine.press(g["id"])
 
 
-def test_rules_never_disarm_and_arm_only_when_allowed(env):
+def test_rules_change_the_alarm_only_when_allowed_and_log_it(env):
     engine, ring, modes, bus, notifier, clock, now, controller, store = env
-    engine.put({"name": "Arm at night", "when": {"kind": "button"}, "then": [{"do": "mode", "mode": "NIGHT"}]})
-    run = engine.press(engine.rules()[0]["id"])
+    logged = []
+    engine.log = logged.append
+    arm = engine.put({"name": "Arm at night", "when": {"kind": "button"}, "then": [{"do": "mode", "mode": "NIGHT"}]})
+    off = engine.put({"name": "Disarm", "when": {"kind": "button"}, "then": [{"do": "mode", "mode": "HOME"}]})
+    run = engine.press(arm["id"])
     assert run.steps[0]["ok"] is False and "switched off" in run.steps[0]["note"]
     store.update_settings({"allow_app_arming": True})
-    clock.t += 1
-    run = engine.press(engine.rules()[0]["id"])
+    clock.t += 61
+    run = engine.press(arm["id"])
     assert run.steps[0]["ok"] is True and modes.mode == "NIGHT"
+    assert any("changed the house mode HOME -> NIGHT" in m and "trigger: button" in m for m in logged)
+    clock.t += 5
+    run = engine.press(off["id"])                       # within a minute of the last change: refused
+    assert run.steps[0]["ok"] is False and "at most once a minute" in run.steps[0]["note"]
+    clock.t += 61
+    run = engine.press(off["id"])                       # Anthony, 2026-10-31: rules may disarm
+    assert run.steps[0]["ok"] is True and modes.mode == "HOME"
+
+
+def test_house_mode_rules_cannot_loop(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    store.update_settings({"allow_app_arming": True})
+    engine.put({"name": "A", "when": {"kind": "house-mode", "mode": "AWAY"}, "then": [{"do": "mode", "mode": "NIGHT"}]})
+    engine.put({"name": "B", "when": {"kind": "house-mode", "mode": "NIGHT"}, "then": [{"do": "mode", "mode": "AWAY"}]})
+    set_mode(bus, "all")                                # armed AWAY at the keypad: rule A fires once
+    assert [r.rule["name"] for r in engine.runs] == ["A"] and modes.mode == "NIGHT"
+    assert len([c for c in ring.calls if c[0].endswith("/mode")]) == 1   # B ignored A's change
+
+
+def test_how_long_runs_last():
+    from home_control.rules import MAX_MINUTES, run_seconds
+    siren = {"then": [{"do": "camera_siren"}]}
+    pattern = {"then": [{"do": "lights", "pattern": "pulse"}]}
+    once = {"then": [{"do": "lights", "on": True}, {"do": "alert"}]}
+    assert run_seconds(siren) == 300 and run_seconds(pattern) == 300   # no until, but it lasts: 5 min
+    assert run_seconds(once) == 0                                       # ends when done
+    assert run_seconds(dict(once, until={"stop": True})) == 60 * MAX_MINUTES   # always capped
+    assert run_seconds(dict(once, until={"mode_is": ["HOME"]})) == 60 * MAX_MINUTES
+    assert run_seconds(dict(once, until={"minutes": 2})) == 120
+    assert run_seconds(once, test=True) == 20
+
+
+def test_a_siren_rule_without_until_keeps_its_siren(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    rule = engine.put({"name": "Scare", "when": {"kind": "button"}, "then": [{"do": "camera_siren"}]})
+    run = engine.press(rule["id"])
+    assert run.ended is None                                           # not ended at once
+    assert [b for p, b in ring.calls if p == "/cameras/2/siren"] == [{"on": True}]
+
+
+def test_a_forgotten_run_does_not_block_its_rule_forever(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    engine.put({"name": "Watch", "when": {"kind": "motion"}, "then": [{"do": "alert"}], "until": {"stop": True}})
+    motion(bus)
+    cap = next(t for t in Timer.made if t.fn == engine.end)
+    assert cap.seconds == 3600
+    cap.fire()
+    motion(bus)
+    assert len(engine.runs) == 2
 
 
 def test_push_alerts_not_set_up_is_reported_not_fatal(env, tmp_path):
@@ -343,3 +393,16 @@ def test_bad_pattern_settings_are_reported(env):
                        "then": [{"do": "lights", "target": "all", "pattern": "pulse", "params": {"color": "red"}}]})
     run = engine.press(rule["id"])
     assert run.steps[0]["ok"] is False and "aren't right" in run.steps[0]["note"]
+
+
+def test_the_rules_clock_reads_the_mode_while_it_is_unknown(tmp_path):
+    store = Store(str(tmp_path / "u.json"))
+    controller = Controller(Hub([DemoBackend()], store), store)
+    bus = EventBus()
+    ring = DemoRing(bus)
+    modes = HouseModes(store, bus, ring)      # never refreshed: Ring was slow at start
+    engine = RulesEngine(store, bus, controller, ring=ring, modes=modes, timer=Timer, executor=lambda fn: fn(),
+                         log=lambda m: None)
+    assert modes.mode is None
+    engine.tick(datetime(2026, 10, 31, 12, 0).astimezone())
+    assert modes.mode == "HOME"

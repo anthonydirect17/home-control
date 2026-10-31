@@ -6,8 +6,8 @@
       "name": "Home Control",           what a tile shows
       "version": "0.6.0",
       "status": "ok" | "warn" | "down",
-      "summary": "6 of 9 lights on; all devices answering",     one line, at most 120 characters
-      "values": [{"label": "Lights", "value": "6 of 9 on", "status": "ok"}, ...],   at most 6
+      "summary": "3 of 5 lights on; all devices answering",     one line, at most 120 characters
+      "values": [{"label": "Lights", "value": "3 of 5 on", "status": "ok"}, ...],   at most 6
       "checked_at": "2026-10-31T21:47:00+00:00",
       "started_at": "...", "uptime_seconds": 1234
     }

@@ -20,6 +20,7 @@ Newer sticks running Amazon's Vega OS have no network ADB, so they can't be pair
 """
 
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import socket
 import struct
 import threading
 import time
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -123,7 +125,7 @@ SEARCH = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:disc
 
 
 def ssdp_locations(timeout=3.0):
-    """LOCATION headers of everything that answers a DIAL search."""
+    """(LOCATION header, the address the reply came from) for everything that answers a DIAL search."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     sock.settimeout(0.5)
@@ -134,34 +136,65 @@ def ssdp_locations(timeout=3.0):
         end = time.time() + timeout
         while time.time() < end:
             try:
-                data, _ = sock.recvfrom(4096)
+                data, (source, _port) = sock.recvfrom(4096)
             except socket.timeout:
                 continue
             for line in data.decode("utf-8", "replace").split("\r\n"):
                 if line.lower().startswith("location:"):
-                    found.add(line.split(":", 1)[1].strip())
+                    found.add((line.split(":", 1)[1].strip(), source))
     finally:
         sock.close()
     return sorted(found)
 
 
-def describe(location, fetch=None):
-    """{name, model, udn, ip} from a DIAL device description, or None if it isn't an Amazon device."""
-    fetch = fetch or (lambda url: urllib.request.urlopen(url, timeout=3).read())
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a device description is never followed elsewhere
+
+
+MAX_DESCRIPTION = 64 * 1024
+
+
+def _fetch(url):
+    opener = urllib.request.build_opener(_NoRedirects)
+    with opener.open(url, timeout=3) as resp:
+        return resp.read(MAX_DESCRIPTION)
+
+
+def safe_location(location, source):
+    """The stick's address, if the description is plain http on the very address the reply came from,
+    and that is a private home-network address. Otherwise None (the answer is ignored)."""
     try:
-        root = ET.fromstring(fetch(location))
+        url = urllib.parse.urlsplit(location)
+        host = url.hostname or ""
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if url.scheme != "http" or host != source or addr.version != 4:
+        return None
+    if not addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+        return None
+    return host
+
+
+def describe(location, source, fetch=None):
+    """{name, model, udn, ip} from a DIAL device description, or None if it isn't a safe Amazon device."""
+    host = safe_location(location, source)
+    if host is None:
+        return None
+    try:
+        root = ET.fromstring((fetch or _fetch)(location))
     except Exception:
         return None
     text = {el.tag.split("}")[-1]: (el.text or "").strip() for el in root.iter()}
     if "amazon" not in text.get("manufacturer", "").lower():
         return None
-    host = location.split("//", 1)[-1].split("/", 1)[0].split(":")[0]
     return {"name": text.get("friendlyName") or "Fire TV", "model": text.get("modelName") or "",
             "udn": text.get("UDN") or None, "ip": host}
 
 
 def find_sticks(locate=ssdp_locations, fetch=None):
-    sticks = [describe(loc, fetch) for loc in locate()]
+    sticks = [describe(loc, source, fetch) for loc, source in locate()]
     return [s for s in sticks if s]
 
 

@@ -52,15 +52,24 @@ def test_vacation_is_a_local_flag_while_armed_away(setup):
     assert modes.mode == "HOME" and store.get("settings")["vacation"] is False  # disarming ends a vacation
 
 
-def test_when_allowed_the_app_arms_but_a_rule_never_disarms(setup):
+def test_when_allowed_the_app_and_rules_arm_and_disarm(setup):
     store, bus, ring, modes = setup
     store.update_settings({"allow_app_arming": True})
     assert modes.change("NIGHT") == "NIGHT"
     assert ring.calls[-1] == ("/locations/demo-home/mode", {"mode": "some"})
-    with pytest.raises(ModeRefused, match="never disarm"):
-        modes.change("HOME", from_rule=True)
     assert modes.change("AWAY", from_rule=True) == "AWAY"
-    assert modes.change("HOME") == "HOME"  # the app itself may, once allowed (with the PIN, at the route)
+    assert modes.change("HOME", from_rule=True) == "HOME"    # Anthony, 2026-10-31: rules may disarm
+    assert ring.calls[-1] == ("/locations/demo-home/mode", {"mode": "none"})
+
+
+def test_ring_echo_of_our_own_change_keeps_who_asked(setup):
+    store, bus, ring, modes = setup
+    store.update_settings({"allow_app_arming": True})
+    modes.change("AWAY", from_rule=True)   # the demo Ring echoes the change on the bus at once
+    by = [e["by"] for e in bus.recent(source="house") if e["kind"] == "house-mode"]
+    assert by[0] == "rule"
+    bus.publish({"source": "ring", "kind": "alarm-mode", "mode": "some", "location": {"id": "demo-home"}})
+    assert bus.recent(source="house")[0]["by"] == "ring"   # a change made at the keypad
 
 
 def test_bad_and_unknown(tmp_path):

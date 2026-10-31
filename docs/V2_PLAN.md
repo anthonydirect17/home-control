@@ -1,24 +1,25 @@
 # Home Control V2, the Bridge and the Fusion kit: the plan
 
 **From:** the Home Control session lead.
-**For:** the HOMESERVER coordinator (the box parts) and the cloud coordinator (the code review); Anthony decides the open points.
-**Answers:** `FROM_HOMESERVER_2026-10-31_homecontrol_v2_brief.md` (all 9 sections), and `HOMESERVER_ONBOARDING.md` section 0.
+**For:** the server's coordinator (the box parts) and the cloud coordinator (the code review); Anthony decides the open points.
+**Answers:** the server coordinator's V2 brief of 2026-10-31 (all 9 sections), the server's onboarding guide (section 0), and the cloud coordinator's review of pull request 15 with Anthony's decisions (2026-10-31).
 **Written:** 2026-10-31. Plain hyphens only; no secrets, account names, device names or addresses.
 
 ## 0. In one page
 
-- **What V2 is:** our own build, with no Home Assistant, in Anthony's account on HOMESERVER, in the Fusion look. It adds Sonos, Fire TV, PC status, Ring Alarm and the Sensi thermostat to V1's lights. On top of those it adds a rules engine ("when, only if, then, until") with house modes, and the screens from the canvas: the dashboard, Light Studio and Alerts.
+- **What V2 is:** our own build, with no Home Assistant, in Anthony's account on the server, in the Fusion look. It adds Sonos, Fire TV, PC status, Ring Alarm and the Sensi thermostat to V1's lights. On top of those it adds a rules engine ("when, only if, then, until") with house modes, and the screens from the canvas: the dashboard, Light Studio and Alerts.
 - **The Bridge:** one front door for every app except The Desk, with six tiles: HOME, WATCHER, LAB, CRUISE, STUDIO and WORKSHOP. It comes with a shared Fusion style kit and **one health feed** that every app answers in the same shape.
 - **Order:** the plan and the device layer first (this document, and pull request 15, open for review). Screens come only after both coordinators have read this plan.
 - **Ring:** stays on the Node library `ring-client-api` that V1 already runs. The Python library has no Ring Alarm support at all (section 3.5).
-- **Built tonight** (pull request 15, unmerged, 231 Python and 6 Node tests passing):
+- **Built** (pull request 15, unmerged, 263 Python and 6 Node tests passing):
   - the health feed;
   - PC status, Sonos and Fire TV;
   - Ring's V2 parts: house modes, self-stopping camera sirens and the garage reader;
   - the rules engine;
   - the Light Studio's pulse, wave and strobe.
-- **Sensi waits** on two questions (section 3.6).
-- **Nothing reaches the box** without its own card, the HOMESERVER coordinator's go-ahead and Anthony's GO.
+- **The alarm (Anthony, 2026-10-31):** arming and disarming from the app with the PIN. The switch for it starts off, and Anthony turns it on in the app with his PIN. Rules may arm, change or disarm the alarm, and saving or pressing such a rule needs the PIN (sections 3.5 and 4).
+- **Sensi waits** on Anthony's choice of sign-in (section 3.6).
+- **Nothing reaches the box** without its own card, the server coordinator's go-ahead and Anthony's GO.
 
 ## 1. Scope and phases (as the brief sets them)
 
@@ -42,7 +43,7 @@
 
 ## 3. The devices, one by one
 
-### 3.1 Govee lights (9): V1's code, kept
+### 3.1 Govee lights: V1's code, kept
 
 - **Cloud API** for every light and for Govee's own scenes and Anthony's DIY scenes. LAN Control, turned on per light, for fast patterns.
 - **The Light Studio:**
@@ -66,7 +67,7 @@
   - **A gentler way to test:** Sonos's "audio clip", which plays over whatever is on and lowers it. That needs one more library, `sonos-websocket`.
   - Both get tested on the soundbar before Red Alert relies on them.
 
-### 3.3 Fire TV sticks (3): built (`home_control/firetv.py`)
+### 3.3 Fire TV sticks: built (`home_control/firetv.py`)
 
 - **Library:** adb-shell 0.4.3, network ADB, outbound only (TCP 5555 on each stick).
   - I chose it over the `androidtv` library the brief named:
@@ -85,15 +86,16 @@
 - **Actions:** on, off, home, back, play and pause, volume, mute, and opening an app.
   - Apps come from a fixed list of streaming apps, offered only when installed. Package names are checked before use, so nothing else can be sent to the stick.
   - The TVs themselves follow through HDMI-CEC.
-- **Limit:** newer sticks running Amazon's **Vega OS** have no network ADB and cannot be paired. **Anthony: which models are the three sticks?** (Settings > My Fire TV > About)
+- **Limit:** newer sticks running Amazon's **Vega OS** have no network ADB and cannot be paired. **Anthony: which models are the sticks?** (Settings > My Fire TV > About)
+- **The network search is checked** (cloud coordinator's review): an answer is used only when its description is plain http, on the very private home-network address the reply came from. Redirects are refused, so nothing can point the app at another host.
 
 ### 3.4 PC status: built (`home_control/pcstatus.py`)
 
-- **HOMESERVER** is "online" whenever the app runs and Tailscale is up there.
-- **HOME** is read from Tailscale's own view of the network (`tailscale status --json`, run on HOMESERVER).
-  - **Nothing is ever sent to HOME.** It runs NinjaTrader, so the check stays at zero contact.
+- **The server itself** is "online" whenever the app runs and Tailscale is up there.
+- **Another PC** is read from Tailscale's own view of the network (`tailscale status --json`, run on the server).
+  - **Nothing is ever sent to that PC.** It may run trading software, so the check stays at zero contact.
 - **No sleep, shutdown or wake action exists,** and a test checks that.
-- **Labels** come from the private settings: HOMESERVER and HOME PC.
+- **Which PCs, and their labels,** come from the private settings.
 
 ### 3.5 Ring: the doorbell, the cameras and the Ring Alarm
 
@@ -103,7 +105,7 @@
   - it loads only doorbells, cameras, chimes and intercoms;
   - there is no security panel, no alarm mode, no alarm sensors and no base station siren in its source.
   - Home Assistant's Ring integration, which uses it, lists no alarm either. Its users reach the Alarm through `ring-mqtt`, which is built on `ring-client-api`.
-- **ring-client-api 14.3.0** (2026-02-08, Node 20, 22 or 24; HOMESERVER has Node 24) documents and implements all of it:
+- **ring-client-api 14.3.0** (2026-02-08, Node 20, 22 or 24; the server has Node 24) documents and implements all of it:
   - the alarm mode (disarmed, home, away);
   - arming and disarming;
   - the sensors (contact, motion, tamper, battery);
@@ -123,28 +125,35 @@
 | AWAY | Armed Away |
 | VACATION | Armed Away (with VACATION's own rules) |
 
-**Arming and disarming from the app is Anthony's decision; nothing is built for it yet. My proposal:**
-- **Arm** (HOME to NIGHT or AWAY): the PIN, then a confirm step that says which sensors are open. Ring refuses to arm with a faulted sensor unless it is bypassed, and bypassing stays in the Ring app.
-- **Disarm:** the PIN, then a confirm step. It is Tailscale-only, like every action.
-  - **Never from a rule.** A rule may arm, if Anthony wants that; it never disarms.
-  - Every arm and disarm is logged with time and device.
+**Arming and disarming from the app (Anthony, 2026-10-31: "I am fine with control inside the app"):**
+- **From the page:** arm, change or disarm with the PIN, every time. There is no extra confirm step. It is Tailscale-only, like every action.
+  - Ring refuses to arm with a faulted sensor unless it is bypassed, and bypassing stays in the Ring app. The app shows Ring's refusal plainly.
+- **The switch:** `allow_app_arming` starts **off**.
+  - Anthony turns it on (or off) in the app with his PIN, through `POST /api/mode/app-arming`, and the page shows its state.
+  - The page cannot change it any other way.
+- **From rules:** a rule may arm, change the level (for example AWAY to NIGHT) or disarm. It needs the switch on, and the PIN every time the rule is saved or pressed by hand (section 4).
+- **Logged:** every change a rule makes is written to the log with the rule, its trigger and the run.
 - **Ring's plan:** arming from any app needs a Ring Protect plan in the US (Ring's plans page). Systems bought before 2023-03-29 may be grandfathered. **Anthony: which plan do you have?** The app shows Ring's own refusal plainly if arming is not allowed.
 
 **Sirens:**
-- **Camera sirens** (the cameras that have one) may be used by rules, about 30 seconds a time. Ring publishes no length for a siren started from an app, so **the app stops it itself after 30 seconds**.
+- **Camera sirens** (the cameras that have one) may be used by rules, about 30 seconds a time. Ring publishes no length for a siren started from an app, so **the app stops it itself after 30 seconds**:
+  - the stop timer is set before the "on" call, so a call that fails after Ring acted still gets its "off";
+  - turning it off is retried;
+  - running sirens and their deadlines are kept in `data\sirens.json`. If the app is stopped mid-siren, the next start turns off any that are past due as soon as Ring connects.
 - **The base station siren:** the library starts it with a plain panel command, not the monitoring call.
   - Ring does not say whether its center is notified when it sounds. Ring's SOS page calls "sound siren only" "without dispatch", but that is not an explicit statement.
-  - **Proposal:** rules never sound the base station siren. It stays a manual, PIN-confirmed button, as in V1, until Anthony decides otherwise.
+  - **Proposal:** rules never sound the base station siren. It stays a manual, PIN-confirmed button, as in V1, until Anthony decides otherwise (still open).
 - **Never:** the library's burglar and fire alarm calls do contact Ring's monitoring center. A test fails the build if their names ever appear in the helper or the app.
 
 **Snapshots and the garage:**
 - **Wired cameras:** a snapshot every 10 seconds at most, even during recording.
 - **Battery cameras:** Ring allows about one snapshot every 10 minutes, and none while a clip is recording (about 30 to 40 seconds after motion). A motion snapshot from a battery camera is often stale.
 - **The garage camera** (picked by Anthony on the setup screen; the app reads from Ring whether it is wired or on battery):
-  - **Wired:** a snapshot every minute, and on motion 15 seconds after it.
-  - **Battery:** a snapshot every 10 minutes, and on motion once the clip has ended (about 45 seconds after).
-  - **Open or closed:** the marked corner is compared with the saved "open" and "closed" references. The comparison is a mean difference of a small greyscale patch, with no AI model.
-  - **"Can't tell"** when both references are about equally far. The page then shows "Can't tell" with the time of the last sure reading.
+  - **Wired:** a snapshot every minute, and one 15 seconds after motion (one per burst of motion).
+  - **Battery:** a snapshot every 10 minutes, and none extra after motion: Ring serves a battery camera's picture from its 10-minute store, so it would be the same one. After an error the next try still waits the 10 minutes.
+  - **Open or closed:** the marked corner is compared with the saved "open" and "closed" references by correlation of a small greyscale patch, which ignores brightness and contrast. There is no AI model.
+  - **"Can't tell"** when the corner shows almost no detail, matches neither well, or matches both about equally. The page then shows "Can't tell" with the time of the last sure reading.
+  - **No false change at start:** the first sure reading after a start (or a new camera) only sets the state, so a "garage open" rule doesn't fire on every restart.
   - **"Last seen"** when the newest picture is older than 30 minutes. The page shows "Last seen closed at 18:05" in a dimmed style.
   - **Night:** separate night references are saved if the corner looks different in infrared.
   - The comparison needs the Pillow library (13.0.0) to read the JPEG.
@@ -173,10 +182,10 @@
   - the refresh token is exchanged at `oauth.sensiapi.io/token`;
   - live data arrives as "state" events over Socket.IO at `rt.sensiapi.io`, path `/thermostat`, over WebSocket;
   - changes go out as `set_temperature`, `set_operating_mode` and `set_fan_mode`.
-- **A question first:** the token exchange uses the **client ID and secret of Sensi's own app**, which iprak/sensi publishes in its code.
-  - They are Copeland's, not Anthony's.
-  - Our repo is public, and its rule is no secrets of any kind, so I have not copied them.
-  - **The cloud coordinator decides:** either they may sit in the public repo, as they do in iprak/sensi, or Anthony types them once into a hidden prompt like his own secrets.
+- **Sensi's app client ID and secret** (the token exchange needs them): **not in the repo** (cloud coordinator, 2026-10-31). Anthony types them once into a hidden prompt, and they are stored encrypted like his own secrets.
+  - The steps will show where to copy them from.
+  - No copy, hash or fragment goes in code, tests, docs or commits; tests use obvious fakes.
+- **Still Anthony's:** the browser-token sign-in (proposed) or Seam.
 - **What Anthony would do once:** sign in at Sensi's website with the browser's developer tools open, and paste the token into the app's hidden prompt. I will write the steps.
 - **Known weak points** (from iprak/sensi's open issues):
   - the connection drops and reconnects about every 31 seconds;
@@ -225,11 +234,18 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
     - snapshots;
     - Fire TV;
     - the thermostat;
-    - the house mode (arming only, never disarming);
+    - the house mode: arm, change the level or disarm (Anthony, 2026-10-31), once the arming switch is on;
     - a push alert to Anthony's phone.
   - **Until:** STOP, a time limit, or a condition (for example the house mode changing).
+- **How long a run lasts:**
+  - **always capped:** "until STOP" or a house mode with no time ends after 60 minutes at most, so a forgotten run can't keep a security rule from firing again;
+  - **no "until":** 5 minutes when the rule starts something that lasts (a light pattern, a camera siren), so a siren keeps its own 30 seconds; otherwise the run ends as soon as its actions are done.
+- **Loop guard for the alarm:**
+  - a house-mode trigger ignores changes made by a rule, including Ring's echo of them;
+  - rules change the alarm at most once a minute.
+  So two rules can never pass the alarm back and forth.
 - **The safe test button** runs only the lights and the phone alert.
-- **The PIN, every time,** for saving or pressing a rule that sounds a camera siren or arms the alarm.
+- **The PIN, every time,** for saving or pressing a rule that sounds a camera siren or changes the alarm (arm, change or disarm).
 - **How a run works:**
   - It runs on its own thread. The push alert goes first, then the lights, sirens and snapshots.
   - When it ends, the lights go back to what they were doing, including an effect that was running.
@@ -252,7 +268,7 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
 
 ### 5.1 What it is
 
-- **One page, "The Bridge",** on one port on HOMESERVER's Tailscale address. Every app except The Desk is reached through it, at its own path:
+- **One page, "The Bridge",** on one port on the server's Tailscale address. Every app except The Desk is reached through it, at its own path:
   - `/home/`
   - `/watcher/`
   - `/lab/`
@@ -263,8 +279,13 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
   - One app stopping never takes the others down: its tile turns red, from its health feed.
   - **As each app moves in,** its own network opening (8780, 8820, 8811 and so on) closes by card.
 - **The Desk stays separate.** The Bridge shows a small "The Desk: healthy" light.
-  - It comes from The Desk's own health route, read once a minute and read only.
-  - **That read needs the cloud coordinator's approval** (section 8): The Desk answers only on Tailscale.
+  - **Approved by the cloud coordinator (2026-10-31), on these conditions:**
+    - one route only, `GET /api/health`; no other route of The Desk, and never a write;
+    - over Tailscale only, never through the Cloudflare tunnel, with no keys or cookies;
+    - at most once a minute, with a 5-second time limit. A failure shows "not answering" until the next minute, with no fast retries (The Desk restarts briefly when it updates);
+    - only `status` and `version` are used. The other fields are never stored, logged or passed on, and the Watcher records only the light;
+    - The Desk's address is read at start, never written into the repo;
+    - if the box needs a firewall or port change for it, that is a request card to the server's coordinator.
 - **Repo:** **a new private repo for the Bridge and the kit** (Anthony, 2026-10-31), which Anthony creates. Under the CI rule, a private repo's first server card asks for a runner. Until the repo exists, the kit's first pieces (the health feed) live in Home Control's repo.
   - **Cost for the box:** one more private repo with a CI runner.
 
@@ -337,7 +358,7 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
   - mark its routes.
   An app that can't (for example one with absolute links built in) says why in its own card, and is changed before it moves in.
 
-## 6. What the box needs (for the HOMESERVER coordinator)
+## 6. What the box needs (for the server's coordinator)
 
 | Item | Phase | Detail |
 |---|---|---|
@@ -390,12 +411,10 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 
 ## 7. Order of work
 
-1. **Now:**
+1. **Done:**
    - this plan, to both coordinators;
-   - pull request 15 (the health feed, PC status, Sonos, Fire TV), **left open** for the cloud coordinator's review (Anthony, 2026-10-31).
-2. **Next, in code, without the box:**
-   - **Done tonight:** Ring's V2 parts (house modes, camera sirens with the 30-second stop, the snapshot schedule, the garage reader) and the rules engine.
-   - **Sensi's client** follows the decisions in section 3.6.
+   - pull request 15: the device layer, house modes, sirens, the garage reader and the rules engine. It had an independent review, and the cloud coordinator's review (changes requested, now made). It is **left open** until the re-review and Anthony's GO.
+2. **Next, in code, without the box:** Sensi's client, once Anthony chooses the sign-in (section 3.6).
 3. **After both coordinators have read this plan:** the Fusion kit and the Bridge (in the new private repo, once Anthony creates it), then HOME's screens in the Fusion look: the dashboard, the Light Studio, Alerts.
 4. **Cards, in Anthony's server order:**
    - the 0.5.2 update card (already written);
@@ -405,21 +424,22 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 
 ## 8. Asks
 
-**HOMESERVER coordinator:**
+**The server's coordinator:**
 - a port block for the Bridge (8840 upward);
 - reading this plan's box parts (section 6) before I write the phase 1 card.
 
-**Cloud coordinator:**
-- reviewing pull request 15;
-- **Sensi's app client secret:** may it sit in the public repo, or should Anthony type it into a hidden prompt (section 3.6)?
-- **approving a read-only check of The Desk's `/api/health`** by the Bridge, once a minute, for its "The Desk: healthy" light.
+**Cloud coordinator:** the re-review of pull request 15 after the changes it asked for. Its rulings on The Desk's health light (section 5.1) and Sensi's client secret (section 3.6) are applied.
 
-**Anthony (open decisions; nothing is built for them until he decides):**
-1. **Disarming (and arming) the Ring Alarm from the app:** yes or no, with the proposal in section 3.5.
-2. **The base station siren:** keep it as a manual PIN button and out of rules (proposed), or something else.
-3. **The Workshop's print-file home:** waiting on the 3D print session's inventory.
-4. **Push alerts:** ntfy or Pushover, later.
-5. **The Fire TV models** (any on Vega OS cannot be paired).
-6. **The Ring plan** (arming from an app needs one).
-7. **Sensi:** the one-time browser step (proposed), or Seam (paid).
-8. **The new private repo** for the Bridge and the kit: Anthony creates it.
+**Anthony: decided on 2026-10-31.**
+- Arming and disarming from the app, with the PIN only.
+- Rules may change and disarm the alarm.
+- The garage state stays on the health route.
+
+**Anthony: still open** (nothing is built for these until he decides):
+1. **The base station siren:** keep it as a manual PIN button and out of rules (proposed), or something else.
+2. **The Ring plan** (arming from an app needs one).
+3. **The Fire TV models** (any on Vega OS cannot be paired).
+4. **Sensi:** the one-time browser step (proposed), or Seam (paid).
+5. **Push alerts:** ntfy or Pushover, later.
+6. **The Workshop's print-file home:** waiting on the 3D print session's inventory.
+7. **The new private repo** for the Bridge and the kit: Anthony creates it.

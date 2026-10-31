@@ -17,13 +17,24 @@ Triggers ("when"): motion, doorbell, sensor-open, alarm (the Ring Alarm going of
 closed), house-mode, time, sunrise, sunset, button. Conditions ("only if"): house modes, a time
 window (it may cross midnight) and a cool-down. Actions ("then"): lights (a pattern, a scene, a
 color, on or off), camera_siren, sonos, sonos_sound (phase 2), snapshot, firetv, mode (arming
-only, and only once Anthony allows arming from the app), alert. A run lasts ("until") until STOP,
-a time limit, or a house mode; while it runs, the same rule doesn't start again.
+only once Anthony has switched on arming from the app), alert. While a run lasts, the same rule
+doesn't start again.
+
+How long a run lasts ("until"):
+- until STOP, a house mode, or "minutes" (1 to 60);
+- always capped: with "stop" or "mode_is" but no "minutes", it ends after 60 minutes, so a
+  forgotten run can't keep a security rule from firing again;
+- with no "until": 5 minutes when it starts something that lasts (a light pattern, a camera
+  siren), so a siren keeps its own time; otherwise it ends as soon as its actions are done.
 
 The safe test runs only the lights and the phone alert, and ends by itself after 20 seconds.
 
-Safety: a rule never disarms the alarm (modes.py refuses), never sounds the base station siren
-(there is no action for it), and a camera siren always stops after its time (CameraSirens).
+The alarm (Anthony, 2026-10-31): a rule may arm, change or disarm the Ring Alarm once Anthony has
+switched on arming from the app. Saving or pressing such a rule needs the PIN, every time. Every
+alarm change a rule makes is written to the log with the rule and its trigger. Two guards stop
+rules passing the alarm back and forth: a house-mode trigger ignores changes made by a rule, and
+rules change the alarm at most once a minute. Rules never sound the base station siren (there is
+no action for it), and a camera siren always stops after its time (CameraSirens).
 """
 
 import re
@@ -42,6 +53,8 @@ ACTIONS = ("lights", "camera_siren", "sonos", "sonos_sound", "snapshot", "firetv
 TEST_ACTIONS = ("lights", "alert")
 TEST_SECONDS = 20
 MAX_MINUTES = 60
+DEFAULT_MINUTES = 5          # no "until", but something that lasts (a pattern, a siren)
+MODE_GAP_SECONDS = 60        # rules change the alarm at most once a minute
 RUNS_KEPT = 100
 CLOCK_TRIGGERS = ("time", "sunrise", "sunset")
 RULE_ID = re.compile(r"[0-9a-f]{8}")
@@ -115,8 +128,6 @@ def validate(rule):
     for step in then:
         if not isinstance(step, dict) or step.get("do") not in ACTIONS:
             raise ValueError(f"each action's 'do' must be one of: {', '.join(ACTIONS)}")
-        if step["do"] == "mode" and str(step.get("mode", "")).upper() == "HOME":
-            raise ValueError("a rule may never disarm the alarm")
     if only_if.get("cooldown_s") is not None:
         try:
             cooldown = float(only_if["cooldown_s"])
@@ -152,6 +163,29 @@ def red_alert_template():
         ],
         "until": {"stop": True, "minutes": 5, "mode_is": ["HOME"]},
     })
+
+
+LASTING = ("camera_siren",)
+
+
+def lasts(rule):
+    """Does this rule start something that keeps going (a light pattern, a camera siren)?"""
+    for step in rule.get("then") or []:
+        if step.get("do") in LASTING or (step.get("do") == "lights" and step.get("pattern")):
+            return True
+    return False
+
+
+def run_seconds(rule, test=False):
+    """How long a run lasts before its time limit ends it; 0 means it ends when its actions are done."""
+    if test:
+        return TEST_SECONDS
+    until = rule.get("until") or {}
+    if until.get("minutes"):
+        return 60 * float(until["minutes"])
+    if until.get("stop") or until.get("mode_is"):
+        return 60 * MAX_MINUTES  # always capped
+    return 60 * DEFAULT_MINUTES if lasts(rule) else 0
 
 
 class Run:
@@ -200,6 +234,7 @@ class RulesEngine:
         self._active = {}            # rule id -> Run
         self._last_fired = {}        # rule id -> epoch seconds (cool-down)
         self._fired_on = {}          # rule id -> date for clock triggers
+        self._last_mode_change = float("-inf")  # when a rule last changed the alarm
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
@@ -246,6 +281,8 @@ class RulesEngine:
         if src == "garage" and kind == "garage":
             return ek == f"garage-{when.get('state')}"
         if src == "house" and kind == "house-mode" and ek == "house-mode":
+            if event.get("by") == "rule":  # loop guard: a rule's own change never fires another rule
+                return False
             return when.get("mode") in (None, "any", event.get("mode"))
         return False
 
@@ -332,14 +369,13 @@ class RulesEngine:
         if run.ended is not None:
             self._cleanup(run)  # undo whatever started after the STOP
             return
-        until = rule.get("until") or {}
-        seconds = TEST_SECONDS if test else 60 * float(until.get("minutes") or 0)
+        seconds = run_seconds(rule, test)
         if seconds:
             run.timer = self.timer(seconds, self.end, args=(run, "time limit"))
             run.timer.daemon = True
             run.timer.start()
-        elif not until.get("stop") and not until.get("mode_is"):
-            self.end(run, "done")  # nothing keeps it going
+        else:
+            self.end(run, "done")  # nothing lasting started, and nothing waits for STOP
 
     def _note(self, run, step, ok, note=None):
         run.steps.append({"do": step["do"], "ok": ok, "note": note})
@@ -422,8 +458,8 @@ class RulesEngine:
         cams = self._cameras(step.get("cameras", "all"), need_siren=True)
         seconds = step.get("seconds") or self.store.get("settings").get("camera_siren_seconds") or 30
         for cid in cams:
+            run.cleanups.append(lambda cid=cid: self.sirens.stop(cid))  # registered first, in case "on" fails late
             self.sirens.start(cid, seconds)
-            run.cleanups.append(lambda cid=cid: self.sirens.stop(cid))
         return f"{len(cams)} siren(s) for {int(seconds)} s" if cams else "no camera with a siren"
 
     def _act_snapshot(self, run, step):
@@ -455,7 +491,18 @@ class RulesEngine:
     def _act_mode(self, run, step):
         if self.modes is None:
             raise NotSetUp("the Ring Alarm isn't set up")
-        self.modes.change(step.get("mode"), from_rule=True)
+        mode = str(step.get("mode", "")).upper()
+        with self._lock:
+            since = self.clock() - self._last_mode_change
+            if since < MODE_GAP_SECONDS:
+                raise ValueError(f"another rule changed the alarm {int(since)} s ago; rules change it "
+                                 f"at most once a minute")
+            self._last_mode_change = self.clock()
+        was = self.modes.mode
+        now_mode = self.modes.change(mode, from_rule=True)
+        self.log(f"Rule {run.rule['name']!r} changed the house mode {was} -> {now_mode} "
+                 f"(trigger: {run.event.get('kind')}, run {run.id})")
+        return f"{was} -> {now_mode}"
 
     def _act_alert(self, run, step):
         title = "Test: " + run.rule["name"] if run.test else run.rule["name"]

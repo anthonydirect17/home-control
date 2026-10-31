@@ -253,7 +253,7 @@ def test_arming_from_the_app_is_off_until_anthony_decides(tmp_path):
     client = TestClient(create_app(controller, store, Scheduler(controller, store), gate, ring=ring, bus=bus))
     client.post("/api/auth/login", json={"pin": PIN})
     r = client.post("/api/ring/locations/demo-home/mode", json={"mode": "all", "pin": PIN})
-    assert r.status_code == 403 and "Anthony" in r.json()["detail"]
+    assert r.status_code == 403 and "switched off" in r.json()["detail"]
     assert not any("/mode" in p for p, _ in ring.calls)
     assert store.get("settings")["allow_app_arming"] is False
 
@@ -318,3 +318,65 @@ def test_siren_off_is_retried():
     s.start("1")
     s.stop("1")
     assert tries == [{"on": True}, {"on": False}, {"on": False}]
+
+
+class _T:
+    made = []
+
+    def __init__(self, seconds, fn, args=()):
+        self.seconds, self.fn, self.args = seconds, fn, args
+        _T.made.append(self)
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        pass
+
+
+def test_a_failed_on_call_still_gets_its_off():
+    from home_control.ring import CameraSirens
+    posts = []
+
+    class Late:
+        def post(self, path, body):
+            posts.append(body)
+            if body == {"on": True}:
+                raise RingError("timed out")      # but Ring may have started the siren
+
+    _T.made = []
+    s = CameraSirens(Late(), timer=_T, log=lambda m: None, sleep=lambda x: None)
+    with pytest.raises(RingError):
+        s.start("4")
+    assert s.running() == ["4"]                    # the stop timer was set first
+    _T.made[0].fn(*_T.made[0].args)
+    assert posts == [{"on": True}, {"on": False}]
+
+
+def test_sirens_left_on_by_a_stopped_app_are_turned_off_after_restart(tmp_path):
+    from home_control.ring import CameraSirens
+    path = str(tmp_path / "data" / "sirens.json")
+    clock = {"t": 1000.0}
+    posts = []
+    ring = type("R", (), {"post": lambda self, p, b: posts.append((p, b))})()
+    _T.made = []
+    first = CameraSirens(ring, timer=_T, state_path=path, clock=lambda: clock["t"], log=lambda m: None)
+    first.start("1", 30)
+    first.start("2", 120)                          # the app is then killed: its timers are gone
+    clock["t"] += 60
+    posts.clear()
+    bus = EventBus()
+    second = CameraSirens(ring, timer=_T, state_path=path, bus=bus, clock=lambda: clock["t"], log=lambda m: None)
+    second.recover()                               # what the "ready" event does, off its thread
+    assert posts == [("/cameras/1/siren", {"on": False})]   # past due: off at once
+    assert second.running() == ["2"] and abs(_T.made[-1].seconds - 60) < 1   # timed again for the rest
+    _T.made[-1].fn(*_T.made[-1].args)
+    second.recover()
+    assert posts[-1] == ("/cameras/2/siren", {"on": False}) and second.running() == []
+
+
+def test_the_app_arming_switch_needs_the_pin(page):
+    client, ring, controller = page
+    assert client.post("/api/mode/app-arming", json={"on": False}).status_code == 403
+    r = client.post("/api/mode/app-arming", json={"on": False, "pin": PIN})
+    assert r.status_code == 200 and r.json() == {"app_arming": False}
