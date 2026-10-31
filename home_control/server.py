@@ -368,6 +368,16 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         engine().stop_all("STOP ALL on the page")
         return {"ok": True}
 
+    @app.get("/api/rules/snapshots/{cid}")
+    def rules_snapshot(cid: str):
+        """The latest picture a rule took from this camera (kept in memory only, one per camera)."""
+        shot = engine().snapshots.get(cid)
+        if shot is None:
+            raise HTTPException(404, "no snapshot from this camera yet")
+        taken, ctype, data = shot
+        return Response(content=data, media_type=ctype or "image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Taken-At": iso(taken) or ""})
+
     @app.post("/api/rules/stop/{token}")
     def rules_stop_token(token: str):
         """For the STOP button on a push alert. No cookie; the run's own random token, single use."""

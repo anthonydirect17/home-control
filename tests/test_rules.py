@@ -246,5 +246,9 @@ def test_routes(env):
     assert anon.post("/api/rules/stop/not-the-token").status_code == 404
     assert anon.post(f"/api/rules/stop/{token}").json() == {"stopped": True}
     assert anon.get("/api/rules").status_code == 401
+    shot = client.get("/api/rules/snapshots/2")
+    assert shot.status_code == 200 and shot.headers["cache-control"] == "no-store"
+    assert client.get("/api/rules/snapshots/99").status_code == 404
+    assert anon.get("/api/rules/snapshots/2").status_code == 401
     assert client.delete(f"/api/rules/{rid}").status_code == 200
     assert client.delete(f"/api/rules/{rid}").status_code == 404
