@@ -110,13 +110,12 @@ def test_red_alert_runs_until_stop_and_cleans_up(env):
     assert steps["camera_siren"]["ok"] and steps["camera_siren"]["note"] == "1 siren(s) for 30 s"
     assert steps["sonos_sound"]["ok"] is None and "phase 2" in steps["sonos_sound"]["note"]
     assert steps["snapshot"]["ok"] and "2" in engine.snapshots
-    title, text, stop_url = notifier.sent[0]
-    assert title == "Red Alert" and stop_url == f"/api/stop/{run.stop_token}"
+    assert "alert" not in steps and not notifier.sent   # no push alerts for now (Anthony, 2026-10-31)
     motion(bus)                       # already running: not started twice
     assert len(engine.runs) == 1
     assert engine.stop_by_token("wrong") is False
     assert engine.stop_by_token(run.stop_token) is True
-    assert run.end_reason == "STOP from the phone" and controller.effects_running() == 0
+    assert run.end_reason.startswith("STOP") and controller.effects_running() == 0
     assert ("/cameras/2/siren", {"on": False}) in ring.calls
     assert engine.stop_by_token(run.stop_token) is False      # single use
 
@@ -142,16 +141,15 @@ def test_time_limit_mode_change_and_cooldown(env):
     assert second.end_reason == "house mode became HOME"
 
 
-def test_safe_test_runs_only_lights_and_alert(env):
+def test_safe_test_runs_only_the_lights(env):
     engine, ring, modes, bus, notifier, clock, now, controller, store = env
     rule = engine.put(red_alert_template())   # off: tests still run
     run = engine.test(rule["id"])
     done = [s["do"] for s in run.steps if s["ok"]]
     skipped = [s["do"] for s in run.steps if s["note"] == "skipped in the safe test"]
-    assert done == ["alert", "lights"]
+    assert done == ["lights"]
     assert skipped == ["camera_siren", "sonos_sound", "snapshot"]
     assert not any("/siren" in p for p, _ in ring.calls)
-    assert notifier.sent[0][0] == "Test: Red Alert"
     assert next(t for t in Timer.made if t.fn == engine.end).seconds == 20
 
 
@@ -264,7 +262,7 @@ def test_push_alerts_not_set_up_is_reported_not_fatal(env, tmp_path):
     plain.put({"name": "Ping", "when": {"kind": "button"},
                "then": [{"do": "alert", "text": "hi"}, {"do": "lights", "target": "all", "on": True}]})
     run = plain.press(plain.rules()[0]["id"])
-    assert run.steps[0]["ok"] is None and "aren't set up" in run.steps[0]["note"]
+    assert run.steps[0]["ok"] is None and run.steps[0]["note"] == "no push alerts for now"
     assert run.steps[1]["ok"] is True
 
 
@@ -406,3 +404,23 @@ def test_the_rules_clock_reads_the_mode_while_it_is_unknown(tmp_path):
     assert modes.mode is None
     engine.tick(datetime(2026, 10, 31, 12, 0).astimezone())
     assert modes.mode == "HOME"
+
+
+def test_rules_may_sound_the_base_station_siren(env):
+    """Anthony, 2026-10-31: rules may use it too. PIN to save or press; it stops after its time and at the run's end."""
+    from home_control.rules import needs_pin
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    rule = engine.put({"name": "Siren", "enabled": True, "when": {"kind": "button"},
+                       "then": [{"do": "alarm_siren", "seconds": 45}]})
+    assert needs_pin(rule)
+    run = engine.press(rule["id"])
+    assert run.steps[0]["ok"] and run.steps[0]["note"] == "base station siren for 45 s"
+    assert ("/locations/demo-home/siren", {"on": True}) in ring.calls
+    off = [t for t in Timer.made if t.seconds == 45]
+    assert off, "the siren's own stop timer"
+    assert next(t for t in Timer.made if t.fn == engine.end).seconds == 300   # it lasts, so the run is capped
+    engine.end(run, "STOP")
+    assert ("/locations/demo-home/siren", {"on": False}) in ring.calls
+    assert not any("monitor" in p or "alarm/trigger" in p for p, _ in ring.calls)
+    with pytest.raises(ValueError, match="seconds"):
+        validate({"name": "x", "when": {"kind": "button"}, "then": [{"do": "alarm_siren", "seconds": 600}]})

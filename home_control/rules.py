@@ -16,8 +16,8 @@ A rule is data, kept in data/settings.json under "rules":
 Triggers ("when"): motion, doorbell, sensor-open, alarm (the Ring Alarm going off), garage (open or
 closed), house-mode, time, sunrise, sunset, button. Conditions ("only if"): house modes, a time
 window (it may cross midnight) and a cool-down. Actions ("then"): lights (a pattern, a scene, a
-color, on or off), camera_siren, sonos, sonos_sound (phase 2), snapshot, firetv, mode (arming
-only once Anthony has switched on arming from the app), alert. While a run lasts, the same rule
+color, on or off), camera_siren, alarm_siren (the base station's), sonos, sonos_sound (phase 2),
+snapshot, firetv, mode (arming only once Anthony has switched on arming from the app), alert. While a run lasts, the same rule
 doesn't start again.
 
 How long a run lasts ("until"):
@@ -27,14 +27,19 @@ How long a run lasts ("until"):
 - with no "until": 5 minutes when it starts something that lasts (a light pattern, a camera
   siren), so a siren keeps its own time; otherwise it ends as soon as its actions are done.
 
-The safe test runs only the lights and the phone alert, and ends by itself after 20 seconds.
+The safe test runs only the lights (and the phone alert, once there is one), and ends by itself
+after 20 seconds. There are no push alerts for now (Anthony, 2026-10-31: Ring already alerts his
+phone when the alarm sounds); an alert action says so in the run's log and the rest goes on.
 
 The alarm (Anthony, 2026-10-31): a rule may arm, change or disarm the Ring Alarm once Anthony has
 switched on arming from the app. Saving or pressing such a rule needs the PIN, every time. Every
 alarm change a rule makes is written to the log with the rule and its trigger. Two guards stop
 rules passing the alarm back and forth: a house-mode trigger ignores changes made by a rule, and
-rules change the alarm at most once a minute. Rules never sound the base station siren (there is
-no action for it), and a camera siren always stops after its time (CameraSirens).
+rules change the alarm at most once a minute.
+
+Sirens: a rule may sound camera sirens and the base station siren (Anthony, 2026-10-31). Saving or
+pressing such a rule needs the PIN. Every siren stops after its time (30 s by default, 120 s at
+most, CameraSirens), and when the run ends. Nothing here contacts Ring's monitoring center.
 """
 
 import re
@@ -49,7 +54,8 @@ from .scheduler import due
 
 TRIGGERS = ("motion", "doorbell", "sensor-open", "alarm", "garage", "house-mode",
             "time", "sunrise", "sunset", "button")
-ACTIONS = ("lights", "camera_siren", "sonos", "sonos_sound", "snapshot", "firetv", "mode", "alert")
+ACTIONS = ("lights", "camera_siren", "alarm_siren", "sonos", "sonos_sound", "snapshot", "firetv", "mode",
+           "alert")
 TEST_ACTIONS = ("lights", "alert")
 TEST_SECONDS = 20
 MAX_MINUTES = 60
@@ -61,7 +67,7 @@ RULE_ID = re.compile(r"[0-9a-f]{8}")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
-SENSITIVE = ("camera_siren", "mode")  # a rule with these needs the PIN to be saved or pressed
+SENSITIVE = ("camera_siren", "alarm_siren", "mode")  # a rule with these needs the PIN to be saved or pressed
 
 
 def needs_pin(rule):
@@ -73,10 +79,10 @@ class NotSetUp(Exception):
 
 
 class NoNotifier:
-    """Push alerts wait for Anthony's choice of service (ntfy or Pushover)."""
+    """No push alerts for now (Anthony, 2026-10-31); ntfy or Pushover can be added later."""
 
     def send(self, title, text, stop_url=None):
-        raise NotSetUp("push alerts aren't set up yet (Anthony chooses the service)")
+        raise NotSetUp("no push alerts for now")
 
 
 def _hm(text):
@@ -128,6 +134,13 @@ def validate(rule):
     for step in then:
         if not isinstance(step, dict) or step.get("do") not in ACTIONS:
             raise ValueError(f"each action's 'do' must be one of: {', '.join(ACTIONS)}")
+        if step["do"] in ("camera_siren", "alarm_siren") and step.get("seconds") is not None:
+            try:
+                ok = 1 <= float(step["seconds"]) <= 120
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise ValueError("a siren's 'seconds' must be from 1 to 120")
     if only_if.get("cooldown_s") is not None:
         try:
             cooldown = float(only_if["cooldown_s"])
@@ -155,7 +168,6 @@ def red_alert_template():
         "when": {"kind": "motion", "camera": "any"},
         "only_if": {"modes": ["AWAY", "NIGHT", "VACATION"], "cooldown_s": 600},
         "then": [
-            {"do": "alert", "text": "Motion at home while the alarm is set", "stop_button": True},
             {"do": "lights", "target": "all", "pattern": "pulse", "params": {"color": "#FF0000", "rate": 1.5}},
             {"do": "camera_siren", "cameras": "all", "seconds": 30},
             {"do": "sonos_sound", "sound": "alarm"},
@@ -165,7 +177,7 @@ def red_alert_template():
     })
 
 
-LASTING = ("camera_siren",)
+LASTING = ("camera_siren", "alarm_siren")
 
 
 def lasts(rule):
@@ -461,6 +473,22 @@ class RulesEngine:
             run.cleanups.append(lambda cid=cid: self.sirens.stop(cid))  # registered first, in case "on" fails late
             self.sirens.start(cid, seconds)
         return f"{len(cams)} siren(s) for {int(seconds)} s" if cams else "no camera with a siren"
+
+    def _act_alarm_siren(self, run, step):
+        """The Ring Alarm base station's siren, stopped after its time and when the run ends."""
+        if self.sirens is None or self.ring is None:
+            raise NotSetUp("Ring isn't set up")
+        locs = [loc for loc in self.ring.get_json("/devices").get("locations", []) if loc.get("hasAlarm")]
+        if not locs:
+            raise NotSetUp("no Ring Alarm")
+        seconds = step.get("seconds") or self.store.get("settings").get("camera_siren_seconds") or 30
+        for loc in locs:
+            key = f"location:{loc['id']}"
+            run.cleanups.append(lambda key=key: self.sirens.stop(key))  # first, in case "on" fails late
+            seconds = self.sirens.start(key, seconds)
+        self.log(f"Rule {run.rule['name']!r} sounded the base station siren for {int(seconds)} s "
+                 f"(trigger: {run.event.get('kind')}, run {run.id})")
+        return f"base station siren for {int(seconds)} s"
 
     def _act_snapshot(self, run, step):
         taken = 0

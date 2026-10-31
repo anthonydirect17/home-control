@@ -26,7 +26,7 @@
 | Phase | What | Needs on the box |
 |---|---|---|
 | **1** | The Fusion look; lights (V1 plus the Light Studio); Sonos; Fire TV; PC status; the Bridge with the HOME tile; the health feed; **the Energy section** (the electric company's account data, Anthony's call 2026-10-31; section 3.10) | One port block for the Bridge (section 6). No new inbound rule for the devices. Energy: outbound HTTPS only |
-| **2** | Ring (events, motion, doorbell, snapshots, history, the Alarm), the garage from a Ring camera's picture, Sensi, the rules engine and Alerts screen, Sonos sounds and spoken alerts, push alerts | Ring helper packages; one LAN rule for Sonos sounds |
+| **2** | Ring (events, motion, doorbell, snapshots, history, the Alarm), the garage from a Ring camera's picture, Sensi, the rules engine and Alerts screen, Sonos sounds and spoken alerts (no push alerts for now) | Ring helper packages; one LAN rule for Sonos sounds |
 | **3** | Ring live view; the Workshop tile; an Alexa skill if Anthony asks | By their own cards |
 
 ## 2. How the code is laid out
@@ -142,7 +142,7 @@
   - running sirens and their deadlines are kept in `data\sirens.json`. If the app is stopped mid-siren, the next start turns off any that are past due as soon as Ring connects.
 - **The base station siren:** the library starts it with a plain panel command, not the monitoring call.
   - Ring does not say whether its center is notified when it sounds. Ring's SOS page calls "sound siren only" "without dispatch", but that is not an explicit statement.
-  - **Proposal:** rules never sound the base station siren. It stays a manual, PIN-confirmed button, as in V1, until Anthony decides otherwise (still open).
+  - **Anthony's decision (2026-10-31): rules may use it too,** like the camera sirens: the PIN to save or press such a rule, at most 120 seconds (30 by default), stopped after its time and when the run ends, kept in `data\sirens.json` like the camera sirens, and every use logged with its rule and trigger. The manual PIN button stays.
 - **Never:** the library's burglar and fire alarm calls do contact Ring's monitoring center. A test fails the build if their names ever appear in the helper or the app.
 
 **Snapshots and the garage:**
@@ -247,7 +247,8 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
     - Fire TV;
     - the thermostat;
     - the house mode: arm, change the level or disarm (Anthony, 2026-10-31), once the arming switch is on;
-    - a push alert to Anthony's phone.
+    - the base station siren (Anthony, 2026-10-31);
+    - a push alert to Anthony's phone, later; none for now.
   - **Until:** STOP, a time limit, or a condition (for example the house mode changing).
 - **How long a run lasts:**
   - **always capped:** "until STOP" or a house mode with no time ends after 60 minutes at most, so a forgotten run can't keep a security rule from firing again;
@@ -256,18 +257,17 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
   - a house-mode trigger ignores changes made by a rule, including Ring's echo of them;
   - rules change the alarm at most once a minute.
   So two rules can never pass the alarm back and forth.
-- **The safe test button** runs only the lights and the phone alert.
-- **The PIN, every time,** for saving or pressing a rule that sounds a camera siren or changes the alarm (arm, change or disarm).
+- **The safe test button** runs only the lights (and the phone alert, once there is one).
+- **The PIN, every time,** for saving or pressing a rule that sounds a camera siren or the base station siren, or changes the alarm (arm, change or disarm).
 - **How a run works:**
-  - It runs on its own thread. The push alert goes first, then the lights, sirens and snapshots.
+  - It runs on its own thread: the lights, sirens and snapshots, in the rule's order.
   - When it ends, the lights go back to what they were doing, including an effect that was running.
-- **The phone's STOP button** calls `/api/stop/<token>`. This is the one route open without the PIN. Its path is shared with no other route, and the token is random, per run and single use.
-- **"Red Alert" (Anthony's example):** motion while AWAY or NIGHT sets the lights to a red pulse and sounds the camera sirens. It plays an alarm on the Sonos, takes snapshots and sends a push alert with a STOP button. It runs until STOP or 5 minutes.
+- **STOP:** on the Alerts screen, or by disarming (Red Alert ends when the house mode becomes HOME). The phone's STOP route, `/api/stop/<token>`, stays for when push alerts come; its path is shared with no other route, and the token is random, per run and single use.
+- **"Red Alert" (Anthony's example):** motion while AWAY or NIGHT sets the lights to a red pulse and sounds the camera sirens. It plays an alarm on the Sonos and takes snapshots. It runs until STOP, disarming, or 5 minutes. (Its push alert is left out for now.)
 - **Limits stated, as the brief asks:**
   - Ring keeps its own motion clips with Anthony's plan; the box keeps none.
   - The Echos cannot be set off from the app.
-  - The base station siren is not used by rules (section 3.5).
-- **Push alerts: the service is Anthony's choice, later.** The code allows either:
+- **Push alerts: none for now** (Anthony, 2026-10-31: Ring already alerts his phone when the alarm sounds; this app is for doing things and convenience). An "alert" step in a rule is noted as "no push alerts for now" and the rest of the rule goes on. If he wants them later, the code allows either:
   - **ntfy:** free, with an iPhone and Android app.
     - Its STOP button makes the phone itself call the app over Tailscale.
     - On the free hosted service the topic name is the only protection, so anyone who learned it could send a fake alert. The STOP button therefore carries its own secret, checked by the app.

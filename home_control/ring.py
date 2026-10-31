@@ -204,7 +204,8 @@ class RingBridge:
 
 
 class CameraSirens:
-    """Camera sirens that this app stops itself after a set time (30 s by default).
+    """Sirens that this app stops itself after a set time (30 s by default): each camera's, and
+    the Ring Alarm base station's (key "location:<id>"; rules may sound it, the owner, 2026-10-31).
 
     Ring publishes no length for a camera siren started from an app, so a siren is never left
     to run on Ring's own timer:
@@ -214,7 +215,7 @@ class CameraSirens:
     - running sirens and their deadlines are kept in a small file (state_path). If the app is
       stopped mid-siren, the next start turns off any that are past due as soon as Ring is
       connected (the "ready" event), and re-times the rest.
-    Only cameras that have a siren take one; the base station siren is not handled here.
+    Only cameras that have a siren take one. Neither call contacts Ring's monitoring center.
     """
 
     def __init__(self, ring, seconds=30, timer=threading.Timer, log=print, retries=3, retry_wait=2.0,
@@ -235,7 +236,10 @@ class CameraSirens:
 
     def _path(self, cid):
         from urllib.parse import quote
-        return f"/cameras/{quote(str(cid), safe='')}/siren"
+        cid = str(cid)
+        if cid.startswith("location:"):
+            return f"/locations/{quote(cid[len('location:'):], safe='')}/siren"
+        return f"/cameras/{quote(cid, safe='')}/siren"
 
     # --- the deadlines file ---
 
@@ -314,7 +318,7 @@ class CameraSirens:
                 return True
             except Exception as e:
                 if attempt == self.retries - 1:
-                    self.log(f"Ring: couldn't stop a camera siren: {e}")
+                    self.log(f"Ring: couldn't stop a siren: {e}")
                 else:
                     self.sleep(self.retry_wait)
         return False
@@ -327,7 +331,7 @@ class CameraSirens:
         ok = self._siren_off(cid)
         self._save()
         if not ok:
-            raise RingError("couldn't stop the camera siren")
+            raise RingError("couldn't stop the siren")
 
     def stop_all(self):
         with self._lock:
