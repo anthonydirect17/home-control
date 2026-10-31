@@ -405,11 +405,16 @@ def serve(args, store):
     ring = build_ring(store, args, bus)
     services = build_services(store, args)
     modes = None
+    sirens = None
     if ring is not None:
         from .garage import GarageWatcher
         from .modes import HouseModes
+        from .ring import CameraSirens
         modes = HouseModes(store, bus, ring)
+        sirens = CameraSirens(ring)
         services["garage"] = GarageWatcher(store, ring, bus, args.data)
+    from .rules import RulesEngine
+    rules = RulesEngine(store, bus, controller, services=services, sirens=sirens, ring=ring, modes=modes)
     status = controller.connect()
     for route, s in status["backends"].items():
         if not s["connected"]:
@@ -428,10 +433,11 @@ def serve(args, store):
         svc.start()
     if modes:
         threading.Timer(15, modes.refresh).start()  # once the Ring helper has connected
+    rules.start()
 
     import uvicorn
     app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus, services=services,
-                     modes=modes)
+                     modes=modes, sirens=sirens, rules=rules)
     if args.host.lower() == "tailscale":
         # The address itself stays out of the log.
         url = None
@@ -448,6 +454,9 @@ def serve(args, store):
         poller.stop()
         if ring:
             ring.stop()
+        rules.stop()
+        if sirens:
+            sirens.stop_all()
         for svc in services.values():
             svc.stop()
         controller.stop_all()

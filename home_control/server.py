@@ -25,6 +25,8 @@ from .services import ServiceError
 # names) are only set from the command line on the server itself.
 PAGE_SETTINGS = {"latitude", "longitude", "default_fps", "use_govee_desktop"}
 OPEN_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
+# The phone's STOP button (a push alert's action) has no cookie: its random per-run token is the key.
+OPEN_PREFIXES = ("/api/rules/stop/",)
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -187,11 +189,12 @@ def home_feed(controller, ring=None, services=(), started_at=None, now=None):
 
 
 def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None,
-               modes=None):
+               modes=None, sirens=None, rules=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
     services = dict(services or {})  # key -> PollingService (sonos, firetv, pcs, ...)
-    sirens = CameraSirens(ring) if ring is not None else None
+    if sirens is None and ring is not None:
+        sirens = CameraSirens(ring)
     app.state.sirens = sirens
 
     def ring_call(method, *args):
@@ -205,7 +208,7 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
     @app.middleware("http")
     async def require_pin(request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and path not in OPEN_PATHS:
+        if path.startswith("/api/") and path not in OPEN_PATHS and not path.startswith(OPEN_PREFIXES):
             if not gate.cookie_ok(request.cookies.get(COOKIE_NAME)):
                 return JSONResponse({"detail": "PIN required", "pin_required": True}, status_code=401)
         return await call_next(request)
@@ -311,6 +314,66 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         except ServiceError as e:
             raise HTTPException(502, str(e))
         return dict(garage().state(), saved=count)
+
+    # ---------- rules ----------
+
+    def engine():
+        if rules is None:
+            raise HTTPException(503, "rules aren't running on this server")
+        return rules
+
+    @app.get("/api/rules")
+    def rules_state():
+        return engine().state()
+
+    @app.post("/api/rules")
+    def rules_put(body: dict):
+        try:
+            return engine().put(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/rules/{rid}")
+    def rules_delete(rid: str):
+        try:
+            engine().delete(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        return {"ok": True}
+
+    def rule_run(fn, rid):
+        try:
+            run = fn(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"started": run is not None, "run": run.to_dict() if run else None}
+
+    @app.post("/api/rules/{rid}/test")
+    def rules_test(rid: str):
+        """The safe test: only the lights and the phone alert; it ends by itself after 20 seconds."""
+        return rule_run(engine().test, rid)
+
+    @app.post("/api/rules/{rid}/press")
+    def rules_press(rid: str):
+        return rule_run(engine().press, rid)
+
+    @app.post("/api/rules/{rid}/stop")
+    def rules_stop(rid: str):
+        return {"stopped": engine().stop_rule(rid, "STOP on the page")}
+
+    @app.post("/api/rules-stop-all")
+    def rules_stop_all():
+        engine().stop_all("STOP ALL on the page")
+        return {"ok": True}
+
+    @app.post("/api/rules/stop/{token}")
+    def rules_stop_token(token: str):
+        """For the STOP button on a push alert. No cookie; the run's own random token, single use."""
+        if len(token) > 64 or not engine().stop_by_token(token):
+            raise HTTPException(404, "nothing to stop")
+        return {"stopped": True}
 
     @app.get("/api/auth/status")
     def auth_status(request: Request):

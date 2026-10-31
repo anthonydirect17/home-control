@@ -37,6 +37,7 @@ DEFAULTS = {
     "schedules": [],   # see scheduler.py
     "aliases": {},     # device id -> name you gave it here
     "lan_cache": {},   # device id -> {"ip", "sku"} from the last LAN scan
+    "rules": [],       # see rules.py: when / only if / then / until
 }
 
 
