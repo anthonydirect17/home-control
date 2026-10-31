@@ -176,8 +176,14 @@ def test_health_is_open_and_reveals_nothing_private(app_env):
     assert h["connections"] == {"demo": {"label": "Demo (no real lights)", "up": True}}
     assert h["light_count"] == 4 and h["effects_running"] == 0
     assert h["last_event_at"] is None
-    assert set(h) == {"app", "version", "started_at", "uptime_seconds", "connections", "light_count",
-                      "effects_running", "last_event_at"}
+    assert set(h) == {"schema", "app", "name", "version", "status", "summary", "values", "checked_at",
+                      "started_at", "uptime_seconds", "connections", "light_count", "effects_running",
+                      "last_event_at"}
+    from home_control.health_feed import check_feed
+    assert check_feed(h, private_words=("Demo Porch Strip", "Demo Lamp")) == []
+    assert h["schema"] == "fusion-health/1" and h["status"] == "ok"
+    assert h["summary"] == "0 of 4 lights on; all devices answering"
+    assert h["values"] == [{"label": "Lights", "value": "0 of 4 on", "status": "ok"}]
     text = json.dumps(h)
     for private in ("Demo Porch Strip", "Demo Lamp", "DEMO0001", PIN, gate.pin_hash):
         assert private not in text

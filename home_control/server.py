@@ -15,10 +15,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, patterns, scheduler as sched
+from . import __version__, health_feed, patterns, scheduler as sched
 from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
 from .ring import RingError
+from .services import ServiceError
 
 # Settings the page may change. Others (secrets store, DLL path, credential
 # names) are only set from the command line on the server itself.
@@ -106,6 +107,12 @@ class ScheduleBody(BaseModel):
     action: dict
 
 
+class ActBody(BaseModel):
+    target: Optional[str] = None
+    action: str = Field(..., max_length=40)
+    args: Optional[dict] = None
+
+
 def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds") if ts else None
 
@@ -118,9 +125,57 @@ def confirm_with_pin(gate, pin):
         raise HTTPException(429 if e.locked_for else 403, str(e))
 
 
-def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None):
+def home_feed(controller, ring=None, services=(), started_at=None, now=None):
+    """Home Control's answer in the kit's health feed (health_feed.py): counts and states only."""
+    now = now or time.time()
+    st = controller.status()
+    backends = st["backends"].values()
+    lights_up = [b for b in backends if b["connected"]]
+    total = st["device_count"]
+    on = sum(1 for s in controller.state.values() if s.get("on")) if total else 0
+    if not backends or not lights_up:
+        light_status = "down"
+    elif len(lights_up) < len(backends):
+        light_status = "warn"
+    else:
+        light_status = "ok"
+    parts = [("Lights", f"{on} of {total} on" if lights_up else "not answering", light_status)]
+    if ring is not None:
+        up = bool(ring.status.get("connected"))
+        cams = ring.status.get("cameras") or 0
+        parts.append(("Ring", f"{cams} cameras" if up else "not connected", "ok" if up else "down"))
+    for svc in services:
+        try:
+            text = svc.health_text()
+        except Exception:  # a service's own text must never break the feed
+            text = None
+        up = bool(svc.status.get("up"))
+        parts.append((svc.label, text or ("answering" if up else "not answering"), "ok" if up else "down"))
+    statuses = [p[2] for p in parts]
+    if all(s == "down" for s in statuses):
+        status = "down"
+    elif any(s != "ok" for s in statuses):
+        status = "warn"
+    else:
+        status = "ok"
+    first = f"{on} of {total} lights on" if lights_up else "Lights not answering"
+    trouble = [p[0] for p in parts[1:] if p[2] != "ok"]
+    if status == "ok":
+        summary = f"{first}; all devices answering"
+    elif trouble:
+        summary = f"{first}; not answering: {', '.join(trouble)}"
+    else:
+        summary = first
+    if light_status == "warn":
+        summary += "; a light connection is down"
+    return health_feed.make_feed("home-control", "Home Control", __version__, status, summary, parts,
+                                 started_at=started_at, now=now)
+
+
+def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
+    services = dict(services or {})  # key -> PollingService (sonos, firetv, pcs, ...)
 
     def ring_call(method, *args):
         if ring is None:
@@ -140,20 +195,49 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.get("/api/health")
     def health():
+        """The kit's health feed (schema fusion-health/1), plus V1's fields for older readers."""
+        now = time.time()
         st = controller.status()
         connections = {route: {"label": b["label"], "up": bool(b["connected"])} for route, b in st["backends"].items()}
         if ring is not None:
             connections["ring"] = {"label": ring.status["label"], "up": bool(ring.status["connected"])}
-        return {
-            "app": "home-control",
-            "version": __version__,
-            "started_at": iso(started_at),
-            "uptime_seconds": int(time.time() - started_at),
+        for key, svc in services.items():
+            connections[key] = {"label": svc.label, "up": bool(svc.status.get("up"))}
+        feed = home_feed(controller, ring, services.values(), started_at, now)
+        feed.update({
             "connections": connections,
             "light_count": st["device_count"],
             "effects_running": controller.effects_running(),
             "last_event_at": iso(controller.last_activity),
-        }
+        })
+        return feed
+
+    # ---------- V2 device services (Sonos, Fire TV, PC status, ...) ----------
+
+    def service(key):
+        svc = services.get(key)
+        if svc is None:
+            raise HTTPException(404, f"no service {key!r} on this server")
+        return svc
+
+    @app.get("/api/services")
+    def services_state():
+        out = {}
+        for key, svc in services.items():
+            out[key] = {"label": svc.label, "status": {k: v for k, v in svc.status.items() if k != "checked_at"},
+                        "checked_at": iso(svc.status.get("checked_at")), "state": svc.state()}
+        return out
+
+    @app.post("/api/services/{key}/act")
+    def service_act(key: str, body: ActBody):
+        svc = service(key)
+        try:
+            result = svc.act(body.target, body.action, body.args or {})
+        except ServiceError as e:
+            raise HTTPException(502, str(e))
+        except (KeyError, ValueError) as e:
+            raise HTTPException(400, str(e).strip("'\""))
+        return {"ok": True, "result": result, "state": svc.state()}
 
     @app.get("/api/auth/status")
     def auth_status(request: Request):
