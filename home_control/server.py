@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from . import __version__, health_feed, patterns, scheduler as sched
 from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
-from .ring import RingError
+from .ring import CameraSirens, RingError
 from .services import ServiceError
 
 # Settings the page may change. Others (secrets store, DLL path, credential
@@ -107,6 +107,20 @@ class ScheduleBody(BaseModel):
     action: dict
 
 
+class ModeChangeBody(BaseModel):
+    mode: str = Field(..., max_length=12)
+    pin: Optional[str] = None
+
+
+class GarageSetupBody(BaseModel):
+    camera_id: str = Field(..., max_length=40)
+    box: list[float] = Field(..., min_length=4, max_length=4)
+
+
+class GarageRefBody(BaseModel):
+    kind: str = Field(..., max_length=8)
+
+
 class ActBody(BaseModel):
     target: Optional[str] = None
     action: str = Field(..., max_length=40)
@@ -172,10 +186,13 @@ def home_feed(controller, ring=None, services=(), started_at=None, now=None):
                                  started_at=started_at, now=now)
 
 
-def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None):
+def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None,
+               modes=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
     services = dict(services or {})  # key -> PollingService (sonos, firetv, pcs, ...)
+    sirens = CameraSirens(ring) if ring is not None else None
+    app.state.sirens = sirens
 
     def ring_call(method, *args):
         if ring is None:
@@ -238,6 +255,62 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         except (KeyError, ValueError) as e:
             raise HTTPException(400, str(e).strip("'\""))
         return {"ok": True, "result": result, "state": svc.state()}
+
+    # ---------- house modes and the garage setup ----------
+
+    @app.get("/api/mode")
+    def mode_state():
+        if modes is None:
+            return {"mode": None, "modes": [], "app_arming": False}
+        if modes.mode is None:
+            modes.refresh()
+        return modes.state()
+
+    @app.post("/api/mode")
+    def mode_change(body: ModeChangeBody):
+        """Changing the house mode. Arming or disarming needs the PIN every time (and Anthony's switch)."""
+        if modes is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        from .modes import RING_MODE, ModeRefused
+        target = str(body.mode).upper()
+        if modes.mode and target in RING_MODE and RING_MODE[target] != RING_MODE.get(modes.mode):
+            if not store.get("settings").get("allow_app_arming"):
+                raise HTTPException(403, "Arming and disarming from this app is switched off until Anthony "
+                                         "decides (V2 plan, section 3.5). Use the Ring app or the keypad.")
+            confirm_with_pin(gate, body.pin)
+        try:
+            modes.change(target)
+        except ModeRefused as e:
+            raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RingError as e:
+            raise HTTPException(502, str(e))
+        return modes.state()
+
+    def garage():
+        svc = services.get("garage")
+        if svc is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        return svc
+
+    @app.post("/api/garage/setup")
+    def garage_setup(body: GarageSetupBody):
+        try:
+            garage().setup(body.camera_id, body.box)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return garage().state()
+
+    @app.post("/api/garage/reference")
+    def garage_reference(body: GarageRefBody):
+        try:
+            count = garage().save_reference(body.kind)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except ServiceError as e:
+            raise HTTPException(502, str(e))
+        return dict(garage().state(), saved=count)
 
     @app.get("/api/auth/status")
     def auth_status(request: Request):
@@ -489,13 +562,26 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.post("/api/ring/cameras/{cid}/siren")
     def ring_camera_siren(cid: str, body: OnPinBody):
+        """A camera siren: on runs for camera_siren_seconds (30) and then this app stops it."""
         confirm_with_pin(gate, body.pin)
-        return ring_call("post", f"/cameras/{quote(cid, safe='')}/siren", {"on": body.on})
+        if ring is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        try:
+            if body.on:
+                seconds = sirens.start(cid, store.get("settings").get("camera_siren_seconds") or 30)
+                return {"ok": True, "seconds": seconds}
+            sirens.stop(cid)
+            return {"ok": True}
+        except RingError as e:
+            raise HTTPException(502, str(e))
 
     @app.post("/api/ring/locations/{lid}/mode")
     def ring_mode(lid: str, body: ModeBody):
         if body.mode not in ("none", "some", "all"):
             raise HTTPException(400, "mode must be none (disarmed), some (home) or all (away)")
+        if not store.get("settings").get("allow_app_arming"):
+            raise HTTPException(403, "Arming and disarming from this app is switched off until Anthony decides "
+                                     "(V2 plan, section 3.5). Use the Ring app or the keypad.")
         confirm_with_pin(gate, body.pin)
         return ring_call("post", f"/locations/{quote(lid, safe='')}/mode", {"mode": body.mode})
 

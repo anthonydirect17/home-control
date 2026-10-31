@@ -197,6 +197,68 @@ class RingBridge:
         return json.loads(raw)
 
 
+class CameraSirens:
+    """Camera sirens that this app stops itself after a set time (30 s by default).
+
+    Ring publishes no length for a camera siren started from an app, so a siren is never
+    left to run on Ring's own timer. Only cameras that have a siren take one; the base
+    station siren is not handled here (V2 plan, section 3.5).
+    """
+
+    def __init__(self, ring, seconds=30, timer=threading.Timer, log=print):
+        self.ring = ring
+        self.seconds = seconds
+        self.timer = timer
+        self.log = log
+        self._timers = {}
+        self._lock = threading.Lock()
+
+    def _path(self, cid):
+        from urllib.parse import quote
+        return f"/cameras/{quote(str(cid), safe='')}/siren"
+
+    def start(self, cid, seconds=None):
+        seconds = max(1, min(int(seconds or self.seconds), 120))
+        self.ring.post(self._path(cid), {"on": True})
+        with self._lock:
+            old = self._timers.pop(cid, None)
+            if old:
+                old.cancel()
+            t = self.timer(seconds, self._off, args=(cid,))
+            t.daemon = True
+            self._timers[cid] = t
+            t.start()
+        return seconds
+
+    def _off(self, cid):
+        with self._lock:
+            self._timers.pop(cid, None)
+        try:
+            self.ring.post(self._path(cid), {"on": False})
+        except Exception as e:  # logged; Ring's own limit still ends it
+            self.log(f"Ring: couldn't stop a camera siren: {e}")
+
+    def stop(self, cid):
+        with self._lock:
+            t = self._timers.pop(cid, None)
+        if t:
+            t.cancel()
+        self.ring.post(self._path(cid), {"on": False})
+
+    def stop_all(self):
+        with self._lock:
+            running = list(self._timers)
+        for cid in running:
+            try:
+                self.stop(cid)
+            except Exception:
+                pass
+
+    def running(self):
+        with self._lock:
+            return sorted(self._timers)
+
+
 def ring_login(node_path="node", save_token=None, run=subprocess.run):
     """Run the helper's sign-in in this terminal and save the token it returns."""
     problem = setup_problem(node_path)

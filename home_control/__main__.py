@@ -404,6 +404,12 @@ def serve(args, store):
     bus.subscribe(lambda event: controller.touch())  # Ring events count as activity for /api/health
     ring = build_ring(store, args, bus)
     services = build_services(store, args)
+    modes = None
+    if ring is not None:
+        from .garage import GarageWatcher
+        from .modes import HouseModes
+        modes = HouseModes(store, bus, ring)
+        services["garage"] = GarageWatcher(store, ring, bus, args.data)
     status = controller.connect()
     for route, s in status["backends"].items():
         if not s["connected"]:
@@ -420,9 +426,12 @@ def serve(args, store):
         ring.start()
     for svc in services.values():
         svc.start()
+    if modes:
+        threading.Timer(15, modes.refresh).start()  # once the Ring helper has connected
 
     import uvicorn
-    app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus, services=services)
+    app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus, services=services,
+                     modes=modes)
     if args.host.lower() == "tailscale":
         # The address itself stays out of the log.
         url = None
