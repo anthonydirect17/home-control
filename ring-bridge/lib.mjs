@@ -26,6 +26,9 @@ export function describeCamera(cam) {
     lightOn: d.led_status === 'on',
     battery: cam.batteryLevel ?? null,
     batteryLow: !!cam.hasLowBattery,
+    // A camera on battery allows about one snapshot every 10 minutes, and none while it records.
+    onBattery: !!cam.operatingOnBattery,
+    snapshotWhileRecording: !!cam.canTakeSnapshotWhileRecording,
     offline: !!cam.isOffline,
   }
 }

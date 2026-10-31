@@ -22,12 +22,21 @@ DEFAULTS = {
         "secrets_store": "file",  # data/secrets.json (default) or "credential-manager"; see secrets.py
         "node_path": "node",       # for the Ring helper
         "ring_helper_port": 8782,  # 127.0.0.1 only
+        # V2 device layer (private: names and addresses stay in data/)
+        "pcs": [],             # [{"label", "this_machine": true} or {"label", "tailscale_name"}]; see pcstatus.py
+        "sonos": [],           # [{"uid", "name", "ip"}] remembered from discovery; see sonos.py
+        "sonos_max_volume": 100,  # a ceiling for the volume slider and rules; 100 = none
+        "vacation": False,     # VACATION is AWAY plus this flag; see modes.py
+        "allow_app_arming": False,  # arming/disarming from the app; the owner turns it on with the PIN
+        "camera_siren_seconds": 30,  # the app stops a camera siren itself after this long
+        "garage": {},          # {"camera_id", "box": [x0, y0, x1, y1] as fractions}; see garage.py
     },
     "groups": {},      # name -> {"members": [device names], "mode": "span" | "mirror"}
     "presets": {},     # name -> {"pattern": str, "params": dict}
     "schedules": [],   # see scheduler.py
     "aliases": {},     # device id -> name you gave it here
     "lan_cache": {},   # device id -> {"ip", "sku"} from the last LAN scan
+    "rules": [],       # see rules.py: when / only if / then / until
 }
 
 

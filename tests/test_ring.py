@@ -160,6 +160,7 @@ def test_ring_login_explains_missing_setup(monkeypatch, capsys):
 @pytest.fixture
 def page(tmp_path):
     store = Store(str(tmp_path / "settings.json"))
+    store.update_settings({"allow_app_arming": True})  # as if Anthony allowed it; the default is off
     controller = Controller(Hub([DemoBackend()], store), store)
     controller.connect()
     bus = EventBus()
@@ -241,3 +242,141 @@ def test_without_ring_the_page_says_so(tmp_path):
     assert client.get("/api/ring/status").json()["connected"] is False
     assert client.get("/api/ring/devices").status_code == 503
     assert "ring" not in client.get("/api/health").json()["connections"]
+
+
+def test_arming_from_the_app_is_off_until_anthony_decides(tmp_path):
+    store = Store(str(tmp_path / "settings.json"))
+    controller = Controller(Hub([DemoBackend()], store), store)
+    bus = EventBus()
+    ring = DemoRing(bus)
+    gate = PinGate(hash_pin(PIN), b"s" * 32, required=True)
+    client = TestClient(create_app(controller, store, Scheduler(controller, store), gate, ring=ring, bus=bus))
+    client.post("/api/auth/login", json={"pin": PIN})
+    r = client.post("/api/ring/locations/demo-home/mode", json={"mode": "all", "pin": PIN})
+    assert r.status_code == 403 and "switched off" in r.json()["detail"]
+    assert not any("/mode" in p for p, _ in ring.calls)
+    assert store.get("settings")["allow_app_arming"] is False
+
+
+def test_camera_siren_stops_itself(page):
+    client, ring, controller = page
+    r = client.post("/api/ring/cameras/2/siren", json={"on": True, "pin": PIN})
+    assert r.status_code == 200 and r.json()["seconds"] == 30
+    sirens = client.app.state.sirens
+    assert sirens.running() == ["2"]
+    token = sirens._timers["2"][1]
+    sirens._off("2", token)  # what the 30-second timer does
+    assert [b for p, b in ring.calls if p == "/cameras/2/siren"] == [{"on": True}, {"on": False}]
+    assert sirens.running() == []
+    assert client.post("/api/ring/cameras/1/siren", json={"on": True, "pin": PIN}).status_code == 502  # no siren
+
+
+def test_camera_sirens_timer_and_stop_all():
+    from home_control.ring import CameraSirens
+
+    class FakeTimer:
+        made = []
+
+        def __init__(self, seconds, fn, args=()):
+            self.seconds, self.fn, self.args, self.cancelled = seconds, fn, args, False
+            FakeTimer.made.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+    posts = []
+    ring = type("R", (), {"post": lambda self, path, body: posts.append((path, body))})()
+    s = CameraSirens(ring, seconds=30, timer=FakeTimer, log=lambda m: None)
+    assert s.start("cam 7", 500) == 120          # capped at 120 s
+    assert s.start("cam 7") == 30                 # restarting replaces the old timer
+    assert FakeTimer.made[0].cancelled and FakeTimer.made[1].seconds == 30
+    FakeTimer.made[0].fn(*FakeTimer.made[0].args)  # the old timer firing late changes nothing
+    assert s.running() == ["cam 7"] and ("/cameras/cam%207/siren", {"on": False}) not in posts
+    s.start("9")
+    s.stop_all()
+    assert s.running() == []
+    assert ("/cameras/cam%207/siren", {"on": False}) in posts and ("/cameras/9/siren", {"on": False}) in posts
+
+
+def test_siren_off_is_retried():
+    from home_control.ring import CameraSirens
+    tries = []
+
+    class Flaky:
+        def post(self, path, body):
+            tries.append(body)
+            if body == {"on": False} and len(tries) < 3:
+                raise RingError("helper busy")
+
+    s = CameraSirens(Flaky(), timer=lambda *a, **k: type("T", (), {"start": lambda self: None,
+                                                                   "cancel": lambda self: None,
+                                                                   "daemon": True})(),
+                     sleep=lambda s: None, log=lambda m: None)
+    s.start("1")
+    s.stop("1")
+    assert tries == [{"on": True}, {"on": False}, {"on": False}]
+
+
+class _T:
+    made = []
+
+    def __init__(self, seconds, fn, args=()):
+        self.seconds, self.fn, self.args = seconds, fn, args
+        _T.made.append(self)
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        pass
+
+
+def test_a_failed_on_call_still_gets_its_off():
+    from home_control.ring import CameraSirens
+    posts = []
+
+    class Late:
+        def post(self, path, body):
+            posts.append(body)
+            if body == {"on": True}:
+                raise RingError("timed out")      # but Ring may have started the siren
+
+    _T.made = []
+    s = CameraSirens(Late(), timer=_T, log=lambda m: None, sleep=lambda x: None)
+    with pytest.raises(RingError):
+        s.start("4")
+    assert s.running() == ["4"]                    # the stop timer was set first
+    _T.made[0].fn(*_T.made[0].args)
+    assert posts == [{"on": True}, {"on": False}]
+
+
+def test_sirens_left_on_by_a_stopped_app_are_turned_off_after_restart(tmp_path):
+    from home_control.ring import CameraSirens
+    path = str(tmp_path / "data" / "sirens.json")
+    clock = {"t": 1000.0}
+    posts = []
+    ring = type("R", (), {"post": lambda self, p, b: posts.append((p, b))})()
+    _T.made = []
+    first = CameraSirens(ring, timer=_T, state_path=path, clock=lambda: clock["t"], log=lambda m: None)
+    first.start("1", 30)
+    first.start("2", 120)                          # the app is then killed: its timers are gone
+    clock["t"] += 60
+    posts.clear()
+    bus = EventBus()
+    second = CameraSirens(ring, timer=_T, state_path=path, bus=bus, clock=lambda: clock["t"], log=lambda m: None)
+    second.recover()                               # what the "ready" event does, off its thread
+    assert posts == [("/cameras/1/siren", {"on": False})]   # past due: off at once
+    assert second.running() == ["2"] and abs(_T.made[-1].seconds - 60) < 1   # timed again for the rest
+    _T.made[-1].fn(*_T.made[-1].args)
+    second.recover()
+    assert posts[-1] == ("/cameras/2/siren", {"on": False}) and second.running() == []
+
+
+def test_the_app_arming_switch_needs_the_pin(page):
+    client, ring, controller = page
+    assert client.post("/api/mode/app-arming", json={"on": False}).status_code == 403
+    r = client.post("/api/mode/app-arming", json={"on": False, "pin": PIN})
+    assert r.status_code == 200 and r.json() == {"app_arming": False}

@@ -1,10 +1,16 @@
 """Local web server: the JSON API plus the control page.
 
-Everything under /api/ needs a remembered device (the page PIN), except
+On its own, everything under /api/ needs a remembered device (the page PIN), except
 /api/health (for ServerWatch; no names, addresses or secrets) and /api/auth/*.
+
+Behind the Bridge (--bridge-link), the app listens on 127.0.0.1 only and every request except
+/api/health must carry the Bridge's signature (fusion-link/1, fusionkit/link.py). The Bridge
+holds the one sign-in, so a signed request counts as signed in. The PIN for each alarm or
+siren action is still asked for every time, as before.
 """
 
 import os
+import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -15,15 +21,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, patterns, scheduler as sched
+from . import __version__, health_feed, patterns, scheduler as sched
+from .fusionkit import link
 from .auth import COOKIE_NAME, REMEMBER_SECONDS, PinError
 from .govee.base import BackendError
-from .ring import RingError
+from .ring import CameraSirens, RingError
+from .services import ServiceError
 
 # Settings the page may change. Others (secrets store, DLL path, credential
 # names) are only set from the command line on the server itself.
 PAGE_SETTINGS = {"latitude", "longitude", "default_fps", "use_govee_desktop"}
 OPEN_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
+# The phone's STOP button (a push alert's action) has no cookie: its random per-run token is the key.
+# Its path is shared with no other route, and only this exact shape is let through without the PIN.
+OPEN_STOP = re.compile(r"/api/stop/[A-Za-z0-9_-]{1,64}")
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -106,6 +117,30 @@ class ScheduleBody(BaseModel):
     action: dict
 
 
+class PinOnlyBody(BaseModel):
+    pin: Optional[str] = None
+
+
+class ModeChangeBody(BaseModel):
+    mode: str = Field(..., max_length=12)
+    pin: Optional[str] = None
+
+
+class GarageSetupBody(BaseModel):
+    camera_id: str = Field(..., max_length=40)
+    box: list[float] = Field(..., min_length=4, max_length=4)
+
+
+class GarageRefBody(BaseModel):
+    kind: str = Field(..., max_length=8)
+
+
+class ActBody(BaseModel):
+    target: Optional[str] = None
+    action: str = Field(..., max_length=40)
+    args: Optional[dict] = None
+
+
 def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds") if ts else None
 
@@ -118,9 +153,61 @@ def confirm_with_pin(gate, pin):
         raise HTTPException(429 if e.locked_for else 403, str(e))
 
 
-def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None):
+def home_feed(controller, ring=None, services=(), started_at=None, now=None):
+    """Home Control's answer in the kit's health feed (health_feed.py): counts and states only."""
+    now = now or time.time()
+    st = controller.status()
+    backends = st["backends"].values()
+    lights_up = [b for b in backends if b["connected"]]
+    total = st["device_count"]
+    on = sum(1 for s in controller.state.values() if s.get("on")) if total else 0
+    if not backends or not lights_up:
+        light_status = "down"
+    elif len(lights_up) < len(backends):
+        light_status = "warn"
+    else:
+        light_status = "ok"
+    parts = [("Lights", f"{on} of {total} on" if lights_up else "not answering", light_status)]
+    if ring is not None:
+        up = bool(ring.status.get("connected"))
+        cams = ring.status.get("cameras") or 0
+        parts.append(("Ring", f"{cams} cameras" if up else "not connected", "ok" if up else "down"))
+    for svc in services:
+        try:
+            text = svc.health_text()
+        except Exception:  # a service's own text must never break the feed
+            text = None
+        up = bool(svc.status.get("up"))
+        parts.append((svc.label, text or ("answering" if up else "not answering"), "ok" if up else "down"))
+    statuses = [p[2] for p in parts]
+    if all(s == "down" for s in statuses):
+        status = "down"
+    elif any(s != "ok" for s in statuses):
+        status = "warn"
+    else:
+        status = "ok"
+    first = f"{on} of {total} lights on" if lights_up else "Lights not answering"
+    trouble = [p[0] for p in parts[1:] if p[2] != "ok"]
+    if status == "ok":
+        summary = f"{first}; all devices answering"
+    elif trouble:
+        summary = f"{first}; not answering: {', '.join(trouble)}"
+    else:
+        summary = first
+    if light_status == "warn":
+        summary += "; a light connection is down"
+    return health_feed.make_feed("home-control", "Home Control", __version__, status, summary, parts,
+                                 started_at=started_at, now=now)
+
+
+def create_app(controller, store, scheduler, gate, started_at=None, ring=None, bus=None, services=None,
+               modes=None, sirens=None, rules=None, bridge_secret=None):
     app = FastAPI(title="Home Control")
     started_at = started_at or time.time()
+    services = dict(services or {})  # key -> PollingService (sonos, firetv, pcs, ...)
+    if sirens is None and ring is not None:
+        sirens = CameraSirens(ring)
+    app.state.sirens = sirens
 
     def ring_call(method, *args):
         if ring is None:
@@ -132,33 +219,212 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.middleware("http")
     async def require_pin(request: Request, call_next):
-        path = request.url.path
-        if path.startswith("/api/") and path not in OPEN_PATHS:
+        path = request.scope["path"]   # the same path the router uses
+        if bridge_secret is not None and path != "/api/health":
+            who = link.verify(bridge_secret, request.method, link.signed_path(request.scope), request.headers)
+            if who is None or who["route"] != "tailscale":
+                return JSONResponse({"detail": "Home Control is reached through the Bridge"}, status_code=401)
+            request.state.who = who
+            return await call_next(request)   # signed in at the Bridge
+        if path.startswith("/api/") and path not in OPEN_PATHS and not OPEN_STOP.fullmatch(path):
             if not gate.cookie_ok(request.cookies.get(COOKIE_NAME)):
                 return JSONResponse({"detail": "PIN required", "pin_required": True}, status_code=401)
         return await call_next(request)
 
     @app.get("/api/health")
     def health():
+        """The kit's health feed (schema fusion-health/1), plus V1's fields for older readers."""
+        now = time.time()
         st = controller.status()
         connections = {route: {"label": b["label"], "up": bool(b["connected"])} for route, b in st["backends"].items()}
         if ring is not None:
             connections["ring"] = {"label": ring.status["label"], "up": bool(ring.status["connected"])}
-        return {
-            "app": "home-control",
-            "version": __version__,
-            "started_at": iso(started_at),
-            "uptime_seconds": int(time.time() - started_at),
+        for key, svc in services.items():
+            connections[key] = {"label": svc.label, "up": bool(svc.status.get("up"))}
+        feed = home_feed(controller, ring, services.values(), started_at, now)
+        feed.update({
             "connections": connections,
             "light_count": st["device_count"],
             "effects_running": controller.effects_running(),
             "last_event_at": iso(controller.last_activity),
-        }
+        })
+        return feed
+
+    # ---------- V2 device services (Sonos, Fire TV, PC status, ...) ----------
+
+    def service(key):
+        svc = services.get(key)
+        if svc is None:
+            raise HTTPException(404, f"no service {key!r} on this server")
+        return svc
+
+    @app.get("/api/services")
+    def services_state():
+        out = {}
+        for key, svc in services.items():
+            out[key] = {"label": svc.label, "status": {k: v for k, v in svc.status.items() if k != "checked_at"},
+                        "checked_at": iso(svc.status.get("checked_at")), "state": svc.state()}
+        return out
+
+    @app.post("/api/services/{key}/act")
+    def service_act(key: str, body: ActBody):
+        svc = service(key)
+        try:
+            result = svc.act(body.target, body.action, body.args or {})
+        except ServiceError as e:
+            raise HTTPException(502, str(e))
+        except (KeyError, ValueError) as e:
+            raise HTTPException(400, str(e).strip("'\""))
+        return {"ok": True, "result": result, "state": svc.state()}
+
+    # ---------- house modes and the garage setup ----------
+
+    @app.get("/api/mode")
+    def mode_state():
+        if modes is None:
+            return {"mode": None, "modes": [], "app_arming": False}
+        if modes.mode is None:
+            modes.refresh()
+        return modes.state()
+
+    @app.post("/api/mode")
+    def mode_change(body: ModeChangeBody):
+        """Changing the house mode. Arming or disarming needs the PIN every time (and Anthony's switch)."""
+        if modes is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        from .modes import ModeRefused
+        target = str(body.mode).upper()
+        try:
+            # The PIN is checked inside change(), on the same reading of the alarm as the change.
+            modes.change(target, confirm=lambda: confirm_with_pin(gate, body.pin))
+        except ModeRefused as e:
+            raise HTTPException(403 if "switched off" in str(e) else 409, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RingError as e:
+            raise HTTPException(502, str(e))
+        return modes.state()
+
+    @app.post("/api/mode/app-arming")
+    def set_app_arming(body: OnPinBody):
+        """Anthony's switch for arming and disarming from the app (off at first). The PIN, every time."""
+        confirm_with_pin(gate, body.pin)
+        store.update_settings({"allow_app_arming": bool(body.on)})
+        return {"app_arming": bool(body.on)}
+
+    def garage():
+        svc = services.get("garage")
+        if svc is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        return svc
+
+    @app.post("/api/garage/setup")
+    def garage_setup(body: GarageSetupBody):
+        try:
+            garage().setup(body.camera_id, body.box)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return garage().state()
+
+    @app.post("/api/garage/reference")
+    def garage_reference(body: GarageRefBody):
+        try:
+            count = garage().save_reference(body.kind)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except ServiceError as e:
+            raise HTTPException(502, str(e))
+        return dict(garage().state(), saved=count)
+
+    # ---------- rules ----------
+
+    def engine():
+        if rules is None:
+            raise HTTPException(503, "rules aren't running on this server")
+        return rules
+
+    @app.get("/api/rules")
+    def rules_state():
+        return engine().state()
+
+    @app.post("/api/rules")
+    def rules_put(body: dict):
+        """Save a rule. One that sounds sirens or arms the alarm needs the PIN, every time."""
+        from .rules import needs_pin
+        pin = body.pop("pin", None)
+        if needs_pin(body):
+            confirm_with_pin(gate, pin)
+        try:
+            return engine().put(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/rules/{rid}")
+    def rules_delete(rid: str):
+        try:
+            engine().delete(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        return {"ok": True}
+
+    def rule_run(fn, rid):
+        try:
+            run = fn(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"started": run is not None, "run": run.to_dict() if run else None}
+
+    @app.post("/api/rules/{rid}/test")
+    def rules_test(rid: str):
+        """The safe test: only the lights and the phone alert; it ends by itself after 20 seconds."""
+        return rule_run(engine().test, rid)
+
+    @app.post("/api/rules/{rid}/press")
+    def rules_press(rid: str, body: Optional[PinOnlyBody] = None):
+        """A button rule. One that sounds sirens or arms the alarm needs the PIN, every time."""
+        from .rules import needs_pin
+        try:
+            rule = engine().rule(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        if needs_pin(rule):
+            confirm_with_pin(gate, body.pin if body else None)
+        return rule_run(engine().press, rid)
+
+    @app.post("/api/rules/{rid}/stop")
+    def rules_stop(rid: str):
+        return {"stopped": engine().stop_rule(rid, "STOP on the page")}
+
+    @app.post("/api/rules-stop-all")
+    def rules_stop_all():
+        engine().stop_all("STOP ALL on the page")
+        return {"ok": True}
+
+    @app.get("/api/rules/snapshots/{cid}")
+    def rules_snapshot(cid: str):
+        """The latest picture a rule took from this camera (kept in memory only, one per camera)."""
+        shot = engine().snapshots.get(cid)
+        if shot is None:
+            raise HTTPException(404, "no snapshot from this camera yet")
+        taken, ctype, data = shot
+        return Response(content=data, media_type=ctype or "image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Taken-At": iso(taken) or ""})
+
+    @app.post("/api/stop/{token}")
+    def rules_stop_token(token: str):
+        """For the STOP button on a push alert. No cookie; the run's own random token, single use."""
+        if not OPEN_STOP.fullmatch(f"/api/stop/{token}") or not engine().stop_by_token(token):
+            raise HTTPException(404, "nothing to stop")
+        return {"stopped": True}
 
     @app.get("/api/auth/status")
     def auth_status(request: Request):
-        return {"required": gate.required, "pin_set": gate.pin_set,
-                "signed_in": gate.cookie_ok(request.cookies.get(COOKIE_NAME)), "locked_for": gate.locked_for()}
+        via_bridge = getattr(request.state, "who", None) is not None
+        return {"required": gate.required, "pin_set": gate.pin_set, "via_bridge": via_bridge,
+                "signed_in": via_bridge or gate.cookie_ok(request.cookies.get(COOKIE_NAME)),
+                "locked_for": gate.locked_for()}
 
     @app.post("/api/auth/login")
     def login(body: PinBody, response: Response):
@@ -405,13 +671,26 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.post("/api/ring/cameras/{cid}/siren")
     def ring_camera_siren(cid: str, body: OnPinBody):
+        """A camera siren: on runs for camera_siren_seconds (30) and then this app stops it."""
         confirm_with_pin(gate, body.pin)
-        return ring_call("post", f"/cameras/{quote(cid, safe='')}/siren", {"on": body.on})
+        if ring is None:
+            raise HTTPException(503, "Ring isn't set up on this server")
+        try:
+            if body.on:
+                seconds = sirens.start(cid, store.get("settings").get("camera_siren_seconds") or 30)
+                return {"ok": True, "seconds": seconds}
+            sirens.stop(cid)
+            return {"ok": True}
+        except RingError as e:
+            raise HTTPException(502, str(e))
 
     @app.post("/api/ring/locations/{lid}/mode")
     def ring_mode(lid: str, body: ModeBody):
         if body.mode not in ("none", "some", "all"):
             raise HTTPException(400, "mode must be none (disarmed), some (home) or all (away)")
+        if not store.get("settings").get("allow_app_arming"):
+            raise HTTPException(403, "Arming and disarming from this app is switched off. Turn it on in the "
+                                     "app with your PIN, or use the Ring app or the keypad.")
         confirm_with_pin(gate, body.pin)
         return ring_call("post", f"/locations/{quote(lid, safe='')}/mode", {"mode": body.mode})
 

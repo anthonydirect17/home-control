@@ -123,6 +123,44 @@ def christmas(t, n, p):
     return out
 
 
+def _two(p, a="#FF0000", b="#000000"):
+    return hex_to_rgb(p.get("color", a)), hex_to_rgb(p.get("color2", b))
+
+
+def _level(p):
+    return min(1.0, max(0.05, float(p.get("brightness", 1.0))))
+
+
+def pulse(t, n, p):
+    """A quick rise to the first color, then a fade back toward the second: a heartbeat or an alarm."""
+    c1, c2 = _two(p)
+    rate = max(0.1, float(p.get("rate", 1.5)))  # pulses per second
+    frac = (t * rate) % 1.0
+    k = frac / 0.15 if frac < 0.15 else math.exp(-4 * (frac - 0.15))
+    return [_scale(_mix(c2, c1, k), _level(p))] * n
+
+
+def wave(t, n, p):
+    """The two colors roll along the lights like a wave."""
+    c1, c2 = _two(p, "#A77BFF", "#38C8FF")
+    speed = float(p.get("speed", 0.5))       # waves passing per second; negative runs backwards
+    spread = max(0.1, float(p.get("spread", 1.0)))  # waves across the strip (or across a group)
+    out = []
+    for i in range(n):
+        k = 0.5 + 0.5 * math.sin(2 * math.pi * (spread * i / max(1, n) - t * speed))
+        out.append(_scale(_mix(c2, c1, k), _level(p)))
+    return out
+
+
+def strobe(t, n, p):
+    """Short flashes, alternating between the two colors. Needs a frame rate at least twice the flash rate."""
+    c1, c2 = _two(p, "#FFFFFF", "#000000")
+    rate = max(0.2, float(p.get("rate", 2)))   # flashes per second
+    duty = min(0.9, max(0.05, float(p.get("on", 0.5))))
+    frac = (t * rate) % 1.0
+    return [_scale(c1 if frac < duty else c2, _level(p))] * n
+
+
 # name -> (function, label, [param specs]). Param kinds the page understands:
 # color, colors (comma-separated list), number (with min/max/step).
 PATTERNS = {
@@ -157,6 +195,26 @@ PATTERNS = {
     "candy_cane": (candy_cane, "Candy cane", [
         {"key": "width", "kind": "number", "default": 2, "min": 1, "max": 20, "step": 1, "label": "Stripe width"},
         {"key": "speed", "kind": "number", "default": 2, "min": -20, "max": 20, "step": 0.5, "label": "Segments per second"},
+    ]),
+    "pulse": (pulse, "Pulse", [
+        {"key": "color", "kind": "color", "default": "#FF0000"},
+        {"key": "color2", "kind": "color", "default": "#000000", "label": "Between pulses"},
+        {"key": "rate", "kind": "number", "default": 1.5, "min": 0.1, "max": 5, "step": 0.1, "label": "Pulses per second"},
+        {"key": "brightness", "kind": "number", "default": 1, "min": 0.05, "max": 1, "step": 0.05},
+    ]),
+    "wave": (wave, "Wave", [
+        {"key": "color", "kind": "color", "default": "#A77BFF"},
+        {"key": "color2", "kind": "color", "default": "#38C8FF"},
+        {"key": "speed", "kind": "number", "default": 0.5, "min": -5, "max": 5, "step": 0.1, "label": "Waves per second"},
+        {"key": "spread", "kind": "number", "default": 1, "min": 0.1, "max": 5, "step": 0.1, "label": "Waves on the strip"},
+        {"key": "brightness", "kind": "number", "default": 1, "min": 0.05, "max": 1, "step": 0.05},
+    ]),
+    "strobe": (strobe, "Strobe", [
+        {"key": "color", "kind": "color", "default": "#FFFFFF"},
+        {"key": "color2", "kind": "color", "default": "#000000", "label": "Between flashes"},
+        {"key": "rate", "kind": "number", "default": 2, "min": 0.2, "max": 8, "step": 0.1, "label": "Flashes per second"},
+        {"key": "on", "kind": "number", "default": 0.5, "min": 0.05, "max": 0.9, "step": 0.05, "label": "Share of time on"},
+        {"key": "brightness", "kind": "number", "default": 1, "min": 0.05, "max": 1, "step": 0.05},
     ]),
     "christmas": (christmas, "Christmas fade", [
         {"key": "period", "kind": "number", "default": 6, "min": 1, "max": 60, "step": 0.5, "label": "Seconds per cycle"},

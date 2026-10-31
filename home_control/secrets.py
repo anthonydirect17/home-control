@@ -37,12 +37,15 @@ SECRETS = {
     # Ring's sign-in token. Ring rotates it; the app saves each new one at once.
     "ring-refresh-token": {"env": "RING_REFRESH_TOKEN", "target": "home-control/ring-refresh-token",
                            "label": "Ring sign-in token"},
+    # The app's own ADB key for the Fire TV sticks; made by --firetv-pair, never typed.
+    "firetv-adb-key": {"env": "HOME_CONTROL_FIRETV_KEY", "target": "home-control/firetv-adb-key",
+                       "label": "Fire TV control key"},
     # Random key that signs the "remember this device" cookies; created automatically.
     "session-key": {"env": "HOME_CONTROL_SESSION_KEY", "target": "home-control/session-key",
                     "label": "cookie signing key"},
 }
 SET_FLAGS = {"govee-desktop-guid": "--set-guid", "govee-api-key": "--set-govee-key", "page-pin-hash": "--set-pin",
-             "ring-refresh-token": "--ring-login"}
+             "ring-refresh-token": "--ring-login", "firetv-adb-key": "--firetv-pair"}
 
 MARKER = "dpapi:"  # an encrypted value is MARKER + base64 of the DPAPI output
 STORE_CREDMAN = "credential-manager"
@@ -50,6 +53,7 @@ STORE_FILE = "file"
 # Windows only: start a console program without flashing a window.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 APP_TARGET = SECRETS["govee-desktop-guid"]["target"]
+CRED_MAX_BLOB = 5 * 512  # Windows' CRED_MAX_CREDENTIAL_BLOB_SIZE, in bytes
 
 if sys.platform == "win32":
     import ctypes
@@ -111,6 +115,10 @@ def write_credential(target: str, secret: str, user: str = "home-control"):
     if sys.platform != "win32":
         raise RuntimeError("Credential Manager is only available on Windows")
     blob = secret.encode("utf-16-le")
+    if len(blob) > CRED_MAX_BLOB:  # long values (the Fire TV key) fit as UTF-8; _decode reads both
+        blob = secret.encode("utf-8")
+    if len(blob) > CRED_MAX_BLOB:
+        raise OSError("this secret is too long for Windows Credential Manager; use the secrets file")
     buf = ctypes.create_string_buffer(blob, len(blob))
     cred = _CREDENTIAL()
     cred.Type = _CRED_TYPE_GENERIC

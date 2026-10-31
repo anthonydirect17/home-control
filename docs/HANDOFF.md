@@ -12,6 +12,35 @@ This document carries the whole project to any Claude session that works on Home
 
 Personal details (device names, counts, addresses, keys) are deliberately **not** in this file because the repository is public. The owner gives you those in chat. Keys never go in chat.
 
+## V2 (from 2026-10-31): read this first
+
+- **Plan:** `docs/V2_PLAN.md`. It covers the phases, each device, the Ring library choice, the rules, the Bridge, the Fusion kit and the box's needs. Where it differs from the older sections below, the V2 plan wins.
+- **Health feed:** `docs/HEALTH_FEED.md` (schema `fusion-health/1`). Every app behind the Bridge answers `/api/health` in this shape.
+- **Design rule:** futuristic, in the Fusion look. Mockups come first; screens are built only for the direction the owner picks. V1's page stays until V2's screens replace it.
+- **The device layer**, built and tested:
+  - `services.py`, the shared shape;
+  - `pcstatus.py`, `sonos.py`, `firetv.py`;
+  - `modes.py`: house modes, which follow the Ring Alarm;
+  - `garage.py`: status from a camera's picture;
+  - `rules.py`: when, only if, then, until;
+  - `ring.py` `CameraSirens`: stopped by the app after 30 s.
+- **The alarm (the owner, 2026-10-31):**
+  - arming and disarming from the app, with the PIN;
+  - the `allow_app_arming` switch starts off, and the owner turns it on in the app with the PIN;
+  - rules may arm, change or disarm, and need the PIN when saved or pressed.
+- **Behind the Bridge** (the Bridge and the Fusion kit live in their own private repo):
+  - `--bridge-link FILE --host 127.0.0.1`: Home Control listens on this PC only and accepts only requests the Bridge signed (`fusionkit/link.py`, copied from the kit). Its health feed stays open.
+  - A signed request counts as signed in; the PIN for each alarm or siren action is still asked every time.
+  - The page uses relative URLs, so it works at `/` on its own and at `/home/` behind the Bridge.
+  - `install-autostart.ps1 -BindAddress 127.0.0.1 -BridgeLink <file>` sets it up.
+- **Decided later on 2026-10-31 (the owner):** rules may sound the base station siren too (PIN on save and press); Sensi uses the one-time browser step; no push alerts for now; the Energy section (the electric company's account) is in phase 1.
+- **Waiting on the owner:**
+  - the Ring plan;
+  - the Fire TV models;
+  - the Workshop's file home;
+  - which energy plug (one is proven on the box before any card relies on it).
+- **Status:** pull request 15 holds all of this, left open for the cloud coordinator's re-review and the owner's GO. Nothing in it is on the server yet.
+
 ---
 
 ## 1. Goal

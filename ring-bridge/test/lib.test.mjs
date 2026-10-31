@@ -102,6 +102,15 @@ test('snapshot lists cameras, sensors (no access codes) and the alarm mode', asy
   assert.equal(describeCamera(loc.cameras[0]).isDoorbell, true)
 })
 
+test('cameras say whether they run on battery and can snapshot while recording', () => {
+  const battery = describeCamera(fakeCamera('5', 'Side', { operatingOnBattery: true, canTakeSnapshotWhileRecording: false }))
+  assert.equal(battery.onBattery, true)
+  assert.equal(battery.snapshotWhileRecording, false)
+  const wired = describeCamera(fakeCamera('6', 'Drive', { operatingOnBattery: false, canTakeSnapshotWhileRecording: true }))
+  assert.equal(wired.onBattery, false)
+  assert.equal(wired.snapshotWhileRecording, true)
+})
+
 test('local API: secret required, snapshot, events, light, siren, mode', async () => {
   const { loc, cams } = fakeLocation()
   const state = await watch([loc], () => {}, fixedNow)

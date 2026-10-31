@@ -7,6 +7,7 @@
     python -m home_control --set-guid         save the Govee Desktop API GUID (optional)
     python -m home_control --ring-login       sign in to Ring (email, hidden password, two-step code)
     python -m home_control --check-secrets    list saved secrets and whether each is encrypted (names only)
+    python -m home_control --firetv-pair      pair a Fire TV stick (approve it on the TV)
     python -m home_control --secrets-store credential-manager
                                               keep secrets in Windows Credential Manager instead
                                               of data/secrets.json (see secrets.py)
@@ -275,6 +276,30 @@ def build_ring(store, args, bus):
     )
 
 
+def build_services(store, args):
+    """V2's device services. Each starts only when its library is installed; demo mode has none yet."""
+    services = {}
+    if args.demo:
+        return services
+    from .pcstatus import PcStatus
+    services["pcs"] = PcStatus(store)
+    try:
+        import soco  # noqa: F401
+        from .sonos import SonosService
+        services["sonos"] = SonosService(store)
+    except ImportError:
+        print("Sonos: off, its library isn't installed (pip install -r requirements.txt)")
+    try:
+        import adb_shell  # noqa: F401
+        from .firetv import KEY_SECRET, FireTvService
+        from .secrets import get_secret
+        services["firetv"] = FireTvService(os.path.join(args.data, "firetv.json"),
+                                           get_key=lambda: get_secret(KEY_SECRET, store.get("settings"))[0])
+    except ImportError:
+        print("Fire TV: off, its library isn't installed (pip install -r requirements.txt)")
+    return services
+
+
 def build_gate(store, demo):
     from .auth import PinGate, load_or_create_session_key
     from .secrets import get_secret, save_secret_value
@@ -307,11 +332,19 @@ def main():
     parser.add_argument("--set-govee-key", action="store_true",
                         help="check the Govee API key with Govee, save it if it works, and exit")
     parser.add_argument("--ring-login", action="store_true", help="sign in to Ring and exit")
+    parser.add_argument("--firetv-pair", action="store_true",
+                        help="find a Fire TV stick on the home network, pair it (approve on the TV), and exit")
     parser.add_argument("--check-secrets", action="store_true",
                         help="list saved secrets and whether each is encrypted (names only), then exit")
+    parser.add_argument("--bridge-link", metavar="FILE",
+                        help="sit behind the Bridge: accept only requests it signed, using the link file "
+                             "it wrote for Home Control (needs --host 127.0.0.1)")
     parser.add_argument("--secrets-store", choices=["credential-manager", "file"],
                         help="choose where secrets are kept, then exit")
     args = parser.parse_args()
+    if args.bridge_link and args.host != "127.0.0.1":
+        print("Behind the Bridge, Home Control listens on this PC only: use --host 127.0.0.1 with --bridge-link.")
+        return 2
 
     from .secrets import set_data_dir
     from .store import Store
@@ -322,6 +355,10 @@ def main():
         return set_secrets_store(store, args.secrets_store)
     if args.check_secrets:
         return check_secrets(store.get("settings"))
+    if args.firetv_pair:
+        from .firetv import pair
+        from .secrets import get_secret, save_secret_value
+        return pair(os.path.join(args.data, "firetv.json"), get_secret, save_secret_value, store.get("settings"))
     if args.set_pin:
         return set_pin(store.get("settings"))
     if args.set_guid:
@@ -356,6 +393,17 @@ def main():
         time.sleep(RESTART_DELAY)
 
 
+def read_bridge_link(path):
+    """The secret the Bridge shares with Home Control, from its link file; None when not behind it."""
+    if not path:
+        return None
+    from .fusionkit import link
+    try:
+        return link.read_link(path, "home")
+    except ValueError as e:
+        raise RuntimeError(str(e)) from None
+
+
 def serve(args, store):
     from .controller import Controller, StatePoller
     from .hub import Hub
@@ -364,6 +412,7 @@ def serve(args, store):
     from .server import create_app
 
     host = resolve_host(args.host)  # raises if Tailscale isn't up yet; --keep-running retries
+    bridge_secret = read_bridge_link(args.bridge_link)  # raises with a plain reason; --keep-running retries
     from .events import EventBus
 
     started_at = time.time()
@@ -373,6 +422,18 @@ def serve(args, store):
     bus = EventBus()
     bus.subscribe(lambda event: controller.touch())  # Ring events count as activity for /api/health
     ring = build_ring(store, args, bus)
+    services = build_services(store, args)
+    modes = None
+    sirens = None
+    if ring is not None:
+        from .garage import GarageWatcher
+        from .modes import HouseModes
+        from .ring import CameraSirens
+        modes = HouseModes(store, bus, ring)
+        sirens = CameraSirens(ring, state_path=os.path.join(args.data, "sirens.json"), bus=bus)
+        services["garage"] = GarageWatcher(store, ring, bus, args.data)
+    from .rules import RulesEngine
+    rules = RulesEngine(store, bus, controller, services=services, sirens=sirens, ring=ring, modes=modes)
     status = controller.connect()
     for route, s in status["backends"].items():
         if not s["connected"]:
@@ -387,10 +448,19 @@ def serve(args, store):
     poller.start()
     if ring:
         ring.start()
+    for svc in services.values():
+        svc.start()
+    if modes:
+        threading.Timer(15, modes.refresh).start()  # once the Ring helper has connected
+    rules.start()
 
     import uvicorn
-    app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus)
-    if args.host.lower() == "tailscale":
+    app = create_app(controller, store, scheduler, gate, started_at, ring=ring, bus=bus, services=services,
+                     modes=modes, sirens=sirens, rules=rules, bridge_secret=bridge_secret)
+    if bridge_secret is not None:
+        url = None
+        print(f"Home Control is running behind the Bridge (this PC only, port {args.port})")
+    elif args.host.lower() == "tailscale":
         # The address itself stays out of the log.
         url = None
         print(f"Home Control is running on this machine's Tailscale address, port {args.port}")
@@ -402,13 +472,24 @@ def serve(args, store):
     try:
         uvicorn.run(app, host=host, port=args.port, log_level="warning")
     finally:
-        scheduler.stop()
-        poller.stop()
-        if ring:
-            ring.stop()
-        controller.stop_all()
-        hub.close()
+        shutdown(scheduler, poller, rules, sirens, ring, services, controller, hub)
     return 0
+
+
+def shutdown(scheduler, poller, rules, sirens, ring, services, controller, hub):
+    """Stop everything, in an order that never leaves a siren on: rules and sirens go first,
+    while the Ring helper can still turn a siren off; the helper after them."""
+    for step in (scheduler.stop, poller.stop, rules.stop,
+                 sirens.stop_all if sirens else None,
+                 ring.stop if ring else None,
+                 *[svc.stop for svc in services.values()],
+                 controller.stop_all, hub.close):
+        if step is None:
+            continue
+        try:
+            step()
+        except Exception as e:  # one part failing to stop never keeps the rest running
+            print(f"While stopping: {e}")
 
 
 if __name__ == "__main__":

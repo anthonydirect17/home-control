@@ -125,6 +125,11 @@ class Controller:
         return None
 
     def resolve(self, target):
+        if target == "all":  # every light, running one effect side by side (used by rules)
+            members = list(self.devices.values())
+            if not members:
+                raise KeyError("no lights found")
+            return members, "mirror"
         kind, _, name = (target or "").partition(":")
         if kind == "device":
             dev = self.device(name)
@@ -139,7 +144,7 @@ class Controller:
             if not members:
                 raise KeyError(f"group {name!r} has no available lights")
             return members, group.get("mode", "span")
-        raise KeyError(f"target must start with 'device:' or 'group:', got {target!r}")
+        raise KeyError(f"target must be 'all' or start with 'device:' or 'group:', got {target!r}")
 
     def _stop_effects_on(self, ids):
         stopped = []
@@ -222,6 +227,10 @@ class Controller:
     def start_effect(self, target, pattern, params=None, fps=None):
         if pattern not in patterns.PATTERNS:
             raise KeyError(f"unknown pattern {pattern!r}")
+        try:  # a bad setting (a color like "red") would otherwise kill the effect on its first frame
+            patterns.render(pattern, 0.0, 3, params or {})
+        except Exception as e:
+            raise ValueError(f"the settings for {pattern} aren't right ({e})") from None
         members, mode = self.resolve(target)
         errors = {d.name: "effects need a LAN or Govee Desktop connection to this light"
                   for d in members if self.hub.effect_route(d) is None}

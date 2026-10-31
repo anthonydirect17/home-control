@@ -8,8 +8,12 @@ const S = { devices: [], groups: {}, presets: {}, patterns: [], schedules: [], s
 
 // ---------- helpers ----------
 
+// Paths are relative to the page, so the same page works on its own ("/") and behind the
+// Bridge ("/home/"). Callers write "/api/x"; it is sent as "api/x".
+const u = (path) => path.replace(/^\//, "");
+
 async function api(method, path, body) {
-  const res = await fetch(path, {
+  const res = await fetch(u(path), {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
@@ -671,7 +675,7 @@ function renderRingCameras(cameras) {
   box.replaceChildren(...cameras.map(c => {
     const img = el("div", { class: "snap snap-empty", text: c.offline ? "Camera offline" : "No snapshot yet" });
     const shot = el("button", { class: "small ghost", text: "Snapshot", disabled: c.offline, onclick: () => {
-      const pic = el("img", { class: "snap", alt: `Snapshot from ${c.name}`, src: `/api/ring/cameras/${encodeURIComponent(c.id)}/snapshot?t=${Date.now()}` });
+      const pic = el("img", { class: "snap", alt: `Snapshot from ${c.name}`, src: u(`/api/ring/cameras/${encodeURIComponent(c.id)}/snapshot?t=${Date.now()}`) });
       pic.addEventListener("error", () => toast(`No snapshot from ${c.name} right now. Battery cameras allow one every few minutes.`, true));
       img.replaceWith(pic);
     } });

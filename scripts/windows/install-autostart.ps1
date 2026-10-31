@@ -33,10 +33,15 @@
   The task name must stay "HomeControl": ServerWatch's restart button looks
   for exactly that name.
 
+  Behind the Bridge: -BindAddress 127.0.0.1 -BridgeLink <the link file the
+  Bridge wrote for Home Control>. Home Control then listens on this PC only and
+  accepts only requests the Bridge signed (its health feed stays open).
+
   Undo: .\uninstall-autostart.ps1
 
 .EXAMPLE
   .\install-autostart.ps1
+  .\install-autostart.ps1 -BindAddress 127.0.0.1 -BridgeLink C:\Apps\TheBridge\data\links\home.link
   .\install-autostart.ps1 -User OWNER -Repo C:\Apps\HomeControl -BindAddress tailscale -Port 8780
 #>
 param(
@@ -44,6 +49,7 @@ param(
     [string]$Repo = "C:\Apps\HomeControl",
     [string]$BindAddress = "tailscale",
     [int]$Port = 8780,
+    [string]$BridgeLink = "",
     [string]$TaskName = "HomeControl"
 )
 
@@ -55,6 +61,11 @@ if (-not (Test-Path $pythonw)) {
 }
 $log = Join-Path $Repo "logs\home-control.log"
 $arguments = "-m home_control --host $BindAddress --port $Port --no-browser --keep-running --log-file `"$log`""
+if ($BridgeLink) {
+    if ($BindAddress -ne "127.0.0.1") { throw "Behind the Bridge, use -BindAddress 127.0.0.1." }
+    if (-not (Test-Path $BridgeLink)) { throw "Not found: $BridgeLink. Run the Bridge's --links first." }
+    $arguments += " --bridge-link `"$BridgeLink`""
+}
 
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument $arguments -WorkingDirectory $Repo
 # Each trigger repeats every minute with no end. No RepetitionDuration means "indefinitely", but

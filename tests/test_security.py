@@ -65,7 +65,7 @@ def test_api_locked_until_pin_entered_and_device_remembered(app_env):
     assert r.status_code == 401 and r.json()["pin_required"]
     assert client.get("/").status_code == 200  # the page itself loads, showing the PIN screen
     assert client.get("/api/auth/status").json() == {"required": True, "pin_set": True,
-                                                      "signed_in": False, "locked_for": 0}
+                                                      "signed_in": False, "locked_for": 0, "via_bridge": False}
 
     r = client.post("/api/auth/login", json={"pin": PIN})
     assert r.status_code == 200
@@ -176,8 +176,14 @@ def test_health_is_open_and_reveals_nothing_private(app_env):
     assert h["connections"] == {"demo": {"label": "Demo (no real lights)", "up": True}}
     assert h["light_count"] == 4 and h["effects_running"] == 0
     assert h["last_event_at"] is None
-    assert set(h) == {"app", "version", "started_at", "uptime_seconds", "connections", "light_count",
-                      "effects_running", "last_event_at"}
+    assert set(h) == {"schema", "app", "name", "version", "status", "summary", "values", "checked_at",
+                      "started_at", "uptime_seconds", "connections", "light_count", "effects_running",
+                      "last_event_at"}
+    from home_control.health_feed import check_feed
+    assert check_feed(h, private_words=("Demo Porch Strip", "Demo Lamp")) == []
+    assert h["schema"] == "fusion-health/1" and h["status"] == "ok"
+    assert h["summary"] == "0 of 4 lights on; all devices answering"
+    assert h["values"] == [{"label": "Lights", "value": "0 of 4 on", "status": "ok"}]
     text = json.dumps(h)
     for private in ("Demo Porch Strip", "Demo Lamp", "DEMO0001", PIN, gate.pin_hash):
         assert private not in text
