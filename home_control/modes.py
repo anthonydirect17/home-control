@@ -64,6 +64,11 @@ class HouseModes:
         return self.mode
 
     def _on_event(self, event):
+        if event.get("source") == "ring" and event.get("kind") == "ready":
+            # Read the alarm again after every (re)connect: a change made while Ring was away
+            # (the keypad, the Ring app) sends no event. Off the helper's reader thread.
+            threading.Thread(target=self.refresh, daemon=True, name="mode-refresh").start()
+            return
         if event.get("source") == "ring" and event.get("kind") == "alarm-mode":
             loc = event.get("location") or {}
             if self.location_id in (None, loc.get("id")):
@@ -71,6 +76,8 @@ class HouseModes:
                 self._set(event.get("mode"), source="ring")
 
     def _set(self, ring_mode, source):
+        if ring_mode not in RING_MODE.values():  # unknown (panel data missing): keep what we knew
+            return
         if ring_mode != "all" and self._vacation():
             self.store.update_settings({"vacation": False})  # disarming or arming home ends a vacation
         new = house_mode(ring_mode, self._vacation())
@@ -85,8 +92,12 @@ class HouseModes:
 
     # --- changing ---
 
-    def change(self, mode, from_rule=False):
-        """Change the house mode. Refuses unless Anthony has allowed arming from the app."""
+    def change(self, mode, from_rule=False, confirm=None):
+        """Change the house mode. Refuses unless Anthony has allowed arming from the app.
+
+        confirm: called (and may raise) just before the alarm itself would change, so the page's
+        PIN check is decided on the same reading of the mode as the change.
+        """
         mode = str(mode).upper()
         if mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
@@ -102,6 +113,8 @@ class HouseModes:
             return self.mode
         if not self.store.get("settings").get("allow_app_arming"):
             raise ModeRefused("arming and disarming from this app is switched off (Anthony's decision)")
+        if confirm is not None:
+            confirm()
         if self.ring is None or self.location_id is None:
             raise ModeRefused("the Ring Alarm isn't connected")
         self.ring.post(f"/locations/{self.location_id}/mode", {"mode": RING_MODE[mode]})

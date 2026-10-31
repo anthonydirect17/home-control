@@ -118,3 +118,27 @@ def test_mode_routes_when_allowed_need_the_pin_every_time(tmp_path):
 def test_garage_routes_without_ring(tmp_path):
     client, ring, modes = app_with_modes(tmp_path)
     assert client.post("/api/garage/setup", json={"camera_id": "3", "box": [0, 0, 0.3, 0.3]}).status_code == 503
+
+
+def test_reads_the_alarm_again_after_ring_reconnects(tmp_path):
+    import time as _t
+    store = Store(str(tmp_path / "r.json"))
+    bus = EventBus()
+    ring = DemoRing(bus)
+    modes = HouseModes(store, bus, ring)
+    assert modes.mode is None
+    ring.state["locations"][0].update(mode="all", modeName="away")   # armed at the keypad while away
+    bus.publish({"source": "ring", "kind": "ready"})
+    for _ in range(50):
+        if modes.mode:
+            break
+        _t.sleep(0.02)
+    assert modes.mode == "AWAY"
+
+
+def test_an_unknown_mode_changes_nothing(setup):
+    store, bus, ring, modes = setup
+    bus.publish({"source": "ring", "kind": "alarm-mode", "mode": "all", "location": {"id": "demo-home"}})
+    modes.change("VACATION")
+    bus.publish({"source": "ring", "kind": "alarm-mode", "mode": None, "location": {"id": "demo-home"}})
+    assert modes.mode == "VACATION" and store.get("settings")["vacation"] is True

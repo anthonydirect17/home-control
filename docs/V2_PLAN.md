@@ -80,7 +80,7 @@
   2. He runs `python -m home_control --firetv-pair` in his own window.
   3. It searches the network (DIAL, the same search phones use to cast) and lists the sticks by name, so no address is typed.
   4. He approves "Always allow from this computer" on the TV.
-  - Each stick is remembered by serial number and found again by its DIAL id if its address changes.
+  - Each stick is remembered by serial number in its own private file (`data\firetv.json`), and found again by its DIAL id if its address changes.
 - **Status:** awake, screensaver or asleep; the current app; playing or paused. Read every 10 seconds with one command per stick.
 - **Actions:** on, off, home, back, play and pause, volume, mute, and opening an app.
   - Apps come from a fixed list of streaming apps, offered only when installed. Package names are checked before use, so nothing else can be sent to the stick.
@@ -229,6 +229,11 @@ The Echos are not controlled: Amazon offers no API for that. Alexa keeps working
     - a push alert to Anthony's phone.
   - **Until:** STOP, a time limit, or a condition (for example the house mode changing).
 - **The safe test button** runs only the lights and the phone alert.
+- **The PIN, every time,** for saving or pressing a rule that sounds a camera siren or arms the alarm.
+- **How a run works:**
+  - It runs on its own thread. The push alert goes first, then the lights, sirens and snapshots.
+  - When it ends, the lights go back to what they were doing, including an effect that was running.
+- **The phone's STOP button** calls `/api/stop/<token>`. This is the one route open without the PIN. Its path is shared with no other route, and the token is random, per run and single use.
 - **"Red Alert" (Anthony's example):** motion while AWAY or NIGHT sets the lights to a red pulse and sounds the camera sirens. It plays an alarm on the Sonos, takes snapshots and sends a push alert with a STOP button. It runs until STOP or 5 minutes.
 - **Limits stated, as the brief asks:**
   - Ring keeps its own motion clips with Anthony's plan; the box keeps none.

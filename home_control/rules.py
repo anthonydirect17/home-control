@@ -26,6 +26,7 @@ Safety: a rule never disarms the alarm (modes.py refuses), never sounds the base
 (there is no action for it), and a camera siren always stops after its time (CameraSirens).
 """
 
+import re
 import secrets as pysecrets
 import threading
 import time
@@ -43,6 +44,15 @@ TEST_SECONDS = 20
 MAX_MINUTES = 60
 RUNS_KEPT = 100
 CLOCK_TRIGGERS = ("time", "sunrise", "sunset")
+RULE_ID = re.compile(r"[0-9a-f]{8}")
+TOKEN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+SENSITIVE = ("camera_siren", "mode")  # a rule with these needs the PIN to be saved or pressed
+
+
+def needs_pin(rule):
+    return any(step.get("do") in SENSITIVE for step in (rule.get("then") or []) if isinstance(step, dict))
 
 
 class NotSetUp(Exception):
@@ -107,11 +117,22 @@ def validate(rule):
             raise ValueError(f"each action's 'do' must be one of: {', '.join(ACTIONS)}")
         if step["do"] == "mode" and str(step.get("mode", "")).upper() == "HOME":
             raise ValueError("a rule may never disarm the alarm")
+    if only_if.get("cooldown_s") is not None:
+        try:
+            cooldown = float(only_if["cooldown_s"])
+        except (TypeError, ValueError):
+            cooldown = -1
+        if not 0 <= cooldown <= 86400:
+            raise ValueError("'cooldown_s' must be a number of seconds from 0 to 86400")
+        only_if["cooldown_s"] = cooldown
     until = dict(rule.get("until") or {})
     minutes = until.get("minutes")
     if minutes is not None and not (0 < float(minutes) <= MAX_MINUTES):
         raise ValueError(f"'until' minutes must be between 1 and {MAX_MINUTES}")
-    return {"id": str(rule.get("id") or uuid.uuid4().hex[:8]), "name": name,
+    rid = str(rule.get("id") or "")
+    if not RULE_ID.fullmatch(rid):  # ids are always the server's own shape
+        rid = uuid.uuid4().hex[:8]
+    return {"id": rid, "name": name,
             "enabled": bool(rule.get("enabled", True)), "when": when, "only_if": only_if,
             "then": then, "until": until}
 
@@ -123,11 +144,11 @@ def red_alert_template():
         "when": {"kind": "motion", "camera": "any"},
         "only_if": {"modes": ["AWAY", "NIGHT", "VACATION"], "cooldown_s": 600},
         "then": [
+            {"do": "alert", "text": "Motion at home while the alarm is set", "stop_button": True},
             {"do": "lights", "target": "all", "pattern": "pulse", "params": {"color": "#FF0000", "rate": 1.5}},
             {"do": "camera_siren", "cameras": "all", "seconds": 30},
             {"do": "sonos_sound", "sound": "alarm"},
             {"do": "snapshot", "cameras": "all"},
-            {"do": "alert", "text": "Motion at home while the alarm is set", "stop_button": True},
         ],
         "until": {"stop": True, "minutes": 5, "mode_is": ["HOME"]},
     })
@@ -156,7 +177,7 @@ class Run:
 class RulesEngine:
     def __init__(self, store, bus, controller, services=None, sirens=None, ring=None, modes=None,
                  notifier=None, stop_url=None, clock=time.time, now=lambda: datetime.now().astimezone(),
-                 timer=threading.Timer, tick_every=20, log=print):
+                 timer=threading.Timer, tick_every=20, executor=None, log=print):
         self.store = store
         self.bus = bus
         self.controller = controller
@@ -170,6 +191,9 @@ class RulesEngine:
         self.now = now
         self.timer = timer
         self.tick_every = tick_every
+        # A run's actions (sirens, snapshots: seconds each) run on their own thread, never on the
+        # thread that delivered the event (the Ring helper's reader).
+        self.executor = executor or (lambda fn: threading.Thread(target=fn, daemon=True, name="rule-run").start())
         self.log = log
         self.runs = deque(maxlen=RUNS_KEPT)
         self.snapshots = {}          # camera id -> (when, content type, bytes): the latest only
@@ -231,23 +255,31 @@ class RulesEngine:
         if event.get("source") not in ("ring", "garage", "house"):
             return
         for rule in self.rules():
-            if rule.get("enabled") and self.matches(rule["when"], event):
-                self.fire(rule, event)
+            try:  # one broken rule never stops the others
+                if rule.get("enabled") and self.matches(rule["when"], event):
+                    self.fire(rule, event)
+            except Exception as e:
+                self.log(f"Rule {rule.get('name')!r} couldn't start: {e}")
 
     def tick(self, now=None):
         """Clock triggers (time, sunrise, sunset); run every few seconds by the engine's thread."""
         now = now or self.now()
+        if self.modes is not None and self.modes.mode is None:
+            self.modes.refresh()  # still unknown (Ring was slow to connect): keep asking
         settings = self.store.get("settings")
         for rule in self.rules():
-            when = rule["when"]
-            if not rule.get("enabled") or when["kind"] not in CLOCK_TRIGGERS:
-                continue
-            entry = {"enabled": True, "days": when.get("days") or [],
-                     "when": {"type": when["kind"], "time": when.get("time"), "offset": when.get("offset", 0)},
-                     "last_fired": self._fired_on.get(rule["id"])}
-            if due(entry, settings, now):
-                self._fired_on[rule["id"]] = now.date().isoformat()
-                self.fire(rule, {"source": "clock", "kind": when["kind"]})
+            try:  # one broken rule never stops the others
+                when = rule["when"]
+                if not rule.get("enabled") or when["kind"] not in CLOCK_TRIGGERS:
+                    continue
+                entry = {"enabled": True, "days": when.get("days") or [],
+                         "when": {"type": when["kind"], "time": when.get("time"), "offset": when.get("offset", 0)},
+                         "last_fired": self._fired_on.get(rule["id"])}
+                if due(entry, settings, now):
+                    self._fired_on[rule["id"]] = now.date().isoformat()
+                    self.fire(rule, {"source": "clock", "kind": when["kind"]})
+            except Exception as e:
+                self.log(f"Rule {rule.get('name')!r} couldn't start: {e}")
 
     def press(self, rule_id):
         rule = self.rule(rule_id)
@@ -288,8 +320,18 @@ class RulesEngine:
             if not test:
                 self._last_fired[rule["id"]] = self.clock()
         self.bus.publish({"source": "rules", "kind": "rule-started", "rule": rule["name"], "test": test})
+        self.executor(lambda: self._execute(run))
+        return run
+
+    def _execute(self, run):
+        rule, test = run.rule, run.test
         for step in rule["then"]:
+            if run.ended is not None:  # stopped while starting: do no more
+                break
             self._do(run, step)
+        if run.ended is not None:
+            self._cleanup(run)  # undo whatever started after the STOP
+            return
         until = rule.get("until") or {}
         seconds = TEST_SECONDS if test else 60 * float(until.get("minutes") or 0)
         if seconds:
@@ -298,7 +340,6 @@ class RulesEngine:
             run.timer.start()
         elif not until.get("stop") and not until.get("mode_is"):
             self.end(run, "done")  # nothing keeps it going
-        return run
 
     def _note(self, run, step, ok, note=None):
         run.steps.append({"do": step["do"], "ok": ok, "note": note})
@@ -322,13 +363,12 @@ class RulesEngine:
 
     def _act_lights(self, run, step):
         targets = self._lights_targets(step.get("target"))
-        before = {}
+        before = {}  # each light as it was: on or off, its color, and any effect it was running
         for t in targets:
             members, _ = self.controller.resolve(t)
             for d in members:
-                on = self.controller.state.get(d.id, {}).get("on")
-                if on is not None:
-                    before[d.id] = on
+                st = self.controller.state.get(d.id, {})
+                before[d.id] = {"on": st.get("on"), "color": st.get("color"), "effect": st.get("effect")}
         for t in targets:
             if step.get("pattern"):
                 self.controller.start_effect(t, step["pattern"], step.get("params"), step.get("fps"))
@@ -344,11 +384,23 @@ class RulesEngine:
         def undo():
             for t in targets:
                 self.controller.stop(t)
-            for dev_id, on in before.items():
+            effects = {}
+            for dev_id, was in before.items():
+                if was["effect"]:
+                    effects[was["effect"]["target"]] = was["effect"]
+                    continue
                 try:
-                    self.controller.power(f"device:{dev_id}", on)
+                    if was["on"] is False:
+                        self.controller.power(f"device:{dev_id}", False)
+                    elif was["on"] and was["color"]:
+                        self.controller.color(f"device:{dev_id}", was["color"])
                 except Exception:
                     pass
+            for label in effects.values():  # an effect that was running before (Christmas) starts again
+                try:
+                    self.controller.start_effect(label["target"], label["pattern"], label["params"], label["fps"])
+                except Exception as e:
+                    self.log(f"Rule {run.rule['name']!r}: couldn't restart an effect: {e}")
         if step.get("pattern"):
             run.cleanups.append(undo)
         return f"{len(targets)} light target(s)"
@@ -424,13 +476,18 @@ class RulesEngine:
                 run.timer.cancel()
             except Exception:
                 pass
-        for undo in reversed(run.cleanups):
+        self._cleanup(run)
+        self.bus.publish({"source": "rules", "kind": "rule-ended", "rule": run.rule["name"], "reason": reason})
+        return True
+
+    def _cleanup(self, run):
+        with self._lock:
+            undos, run.cleanups = run.cleanups, []
+        for undo in reversed(undos):
             try:
                 undo()
             except Exception as e:
                 self.log(f"Rule {run.rule['name']!r}: clean-up failed: {e}")
-        self.bus.publish({"source": "rules", "kind": "rule-ended", "rule": run.rule["name"], "reason": reason})
-        return True
 
     def stop_run(self, run_id, reason="STOP"):
         run = next((r for r in self.runs if r.id == run_id), None)
@@ -440,8 +497,11 @@ class RulesEngine:
 
     def stop_by_token(self, token):
         """The phone's STOP button: the token alone, compared in constant time."""
+        token = str(token)
+        if not TOKEN.fullmatch(token):
+            return False
         for run in list(self._active.values()):
-            if pysecrets.compare_digest(run.stop_token, str(token)):
+            if pysecrets.compare_digest(run.stop_token.encode(), token.encode()):
                 return self.end(run, "STOP from the phone")
         return False
 

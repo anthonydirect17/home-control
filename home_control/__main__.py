@@ -293,7 +293,8 @@ def build_services(store, args):
         import adb_shell  # noqa: F401
         from .firetv import KEY_SECRET, FireTvService
         from .secrets import get_secret
-        services["firetv"] = FireTvService(store, get_key=lambda: get_secret(KEY_SECRET, store.get("settings"))[0])
+        services["firetv"] = FireTvService(os.path.join(args.data, "firetv.json"),
+                                           get_key=lambda: get_secret(KEY_SECRET, store.get("settings"))[0])
     except ImportError:
         print("Fire TV: off, its library isn't installed (pip install -r requirements.txt)")
     return services
@@ -351,7 +352,7 @@ def main():
     if args.firetv_pair:
         from .firetv import pair
         from .secrets import get_secret, save_secret_value
-        return pair(store, get_secret, save_secret_value, store.get("settings"))
+        return pair(os.path.join(args.data, "firetv.json"), get_secret, save_secret_value, store.get("settings"))
     if args.set_pin:
         return set_pin(store.get("settings"))
     if args.set_guid:
@@ -452,11 +453,11 @@ def serve(args, store):
     finally:
         scheduler.stop()
         poller.stop()
-        if ring:
-            ring.stop()
-        rules.stop()
+        rules.stop()            # first, while the Ring helper can still turn sirens off
         if sirens:
             sirens.stop_all()
+        if ring:
+            ring.stop()
         for svc in services.values():
             svc.stop()
         controller.stop_all()

@@ -15,8 +15,8 @@ below are starting values, tuned on the real camera at install.
 
 How often (Ring's limits, V2 plan section 3.5):
 - a wired camera: a picture every minute, and one 15 seconds after motion;
-- a camera on battery: every 10 minutes (Ring allows no more), and one 45 seconds after
-  motion, once the clip has finished (none can be taken while it records).
+- a camera on battery: every 10 minutes (Ring allows no more). No extra picture after motion:
+  Ring serves a battery camera's picture from its 10-minute store, so it would be the same one.
 A reading older than 30 minutes is shown as "last seen".
 """
 
@@ -34,7 +34,7 @@ MAX_DISTANCE = 0.5         # 1 - correlation: matching no reference better than 
 MARGIN = 0.15              # open and closed matched about as well: can't tell
 MAX_REFS = 4
 WIRED_EVERY, BATTERY_EVERY = 60, 600
-WIRED_AFTER_MOTION, BATTERY_AFTER_MOTION = 15, 45
+WIRED_AFTER_MOTION = 15
 STALE_AFTER = 1800
 
 
@@ -102,6 +102,7 @@ class GarageWatcher(PollingService):
         self.last_sure = None      # {"state", "at"}
         self.since = None          # when the door last changed
         self._lock = threading.Lock()
+        self._motion_timer = None  # at most one read pending after motion
         bus.subscribe(self._on_event)
 
     # --- setup ---
@@ -202,12 +203,19 @@ class GarageWatcher(PollingService):
         cam = (event.get("camera") or {}).get("id")
         if event.get("source") != "ring" or event.get("kind") != "motion" or not cam or cam != cfg.get("camera_id"):
             return
-        delay = BATTERY_AFTER_MOTION if self.on_battery else WIRED_AFTER_MOTION
-        t = self.timer(delay, self._read_quietly)
-        t.daemon = True
+        if self.on_battery:
+            return  # Ring would hand back the same stored picture (see above)
+        with self._lock:
+            if self._motion_timer is not None:
+                return  # one read is already on its way
+            t = self.timer(WIRED_AFTER_MOTION, self._read_quietly)
+            t.daemon = True
+            self._motion_timer = t
         t.start()
 
     def _read_quietly(self):
+        with self._lock:
+            self._motion_timer = None
         try:
             if self.config().get("camera_id") and len(self.refs()) == 2:
                 self.read_now()

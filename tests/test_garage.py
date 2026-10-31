@@ -148,21 +148,33 @@ def test_cant_tell_then_last_seen(setup):
     assert w.health_text() == "last seen closed"
 
 
-def test_battery_camera_reads_every_ten_minutes_and_after_motion(setup):
+def test_battery_camera_reads_every_ten_minutes_and_not_after_motion(setup):
     w, ring, bus, clock, timers, store = setup
     ready(w, ring)
     ring.battery = True
     w.poll_once()
     assert w.interval == g.BATTERY_EVERY and w.state()["on_battery"] is True
     bus.publish({"source": "ring", "kind": "motion", "camera": {"id": "7"}})
+    assert timers == []                       # Ring would return the same stored picture
+    ring.fail = True
+    w.poll_once()
+    assert w.next_delay() >= g.BATTERY_EVERY  # a failing battery camera isn't asked sooner
+
+
+def test_wired_camera_reads_once_after_a_burst_of_motion(setup):
+    w, ring, bus, clock, timers, store = setup
+    ready(w, ring)
+    w.poll_once()
+    assert w.interval == g.WIRED_EVERY
+    for _ in range(3):
+        bus.publish({"source": "ring", "kind": "motion", "camera": {"id": "7"}})
     bus.publish({"source": "ring", "kind": "motion", "camera": {"id": "8"}})  # another camera: ignored
-    assert [t.delay for t in timers] == [g.BATTERY_AFTER_MOTION]
+    assert [t.delay for t in timers] == [g.WIRED_AFTER_MOTION]
     ring.frame = picture("open")
     timers[0].fn()
     assert w.health_text() == "open"
-    ring.battery = False
-    w.poll_once()
-    assert w.interval == g.WIRED_EVERY
+    bus.publish({"source": "ring", "kind": "motion", "camera": {"id": "7"}})
+    assert len(timers) == 2                   # a new burst after the read: one more
 
 
 def test_camera_trouble_marks_it_down(setup):

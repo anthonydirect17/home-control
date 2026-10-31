@@ -264,7 +264,8 @@ def test_camera_siren_stops_itself(page):
     assert r.status_code == 200 and r.json()["seconds"] == 30
     sirens = client.app.state.sirens
     assert sirens.running() == ["2"]
-    sirens._off("2")  # what the 30-second timer does
+    token = sirens._timers["2"][1]
+    sirens._off("2", token)  # what the 30-second timer does
     assert [b for p, b in ring.calls if p == "/cameras/2/siren"] == [{"on": True}, {"on": False}]
     assert sirens.running() == []
     assert client.post("/api/ring/cameras/1/siren", json={"on": True, "pin": PIN}).status_code == 502  # no siren
@@ -292,7 +293,28 @@ def test_camera_sirens_timer_and_stop_all():
     assert s.start("cam 7", 500) == 120          # capped at 120 s
     assert s.start("cam 7") == 30                 # restarting replaces the old timer
     assert FakeTimer.made[0].cancelled and FakeTimer.made[1].seconds == 30
+    FakeTimer.made[0].fn(*FakeTimer.made[0].args)  # the old timer firing late changes nothing
+    assert s.running() == ["cam 7"] and ("/cameras/cam%207/siren", {"on": False}) not in posts
     s.start("9")
     s.stop_all()
     assert s.running() == []
     assert ("/cameras/cam%207/siren", {"on": False}) in posts and ("/cameras/9/siren", {"on": False}) in posts
+
+
+def test_siren_off_is_retried():
+    from home_control.ring import CameraSirens
+    tries = []
+
+    class Flaky:
+        def post(self, path, body):
+            tries.append(body)
+            if body == {"on": False} and len(tries) < 3:
+                raise RingError("helper busy")
+
+    s = CameraSirens(Flaky(), timer=lambda *a, **k: type("T", (), {"start": lambda self: None,
+                                                                   "cancel": lambda self: None,
+                                                                   "daemon": True})(),
+                     sleep=lambda s: None, log=lambda m: None)
+    s.start("1")
+    s.stop("1")
+    assert tries == [{"on": True}, {"on": False}, {"on": False}]

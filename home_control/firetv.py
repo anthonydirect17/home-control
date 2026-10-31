@@ -12,13 +12,16 @@ How it connects (adb-shell, https://github.com/JeffLIrion/adb_shell):
 
 Sticks are paired once with `python -m home_control --firetv-pair`, which searches the
 network (DIAL over SSDP, the same search phones use to cast) and lists what it finds. Each
-is remembered in the private settings by serial number, name, model and last address, and
-found again by searching when its address changes.
+is remembered in its own private file, data/firetv.json (serial number, name, model and last
+address), and found again by searching when its address changes. A file of its own means a
+pairing done while the app runs is never overwritten by the app's next settings save.
 
 Newer sticks running Amazon's Vega OS have no network ADB, so they can't be paired.
 """
 
 import base64
+import json
+import os
 import re
 import socket
 import struct
@@ -57,6 +60,23 @@ STATUS_CMD = ("dumpsys power | grep -E -m2 'mWakefulness=|Display Power: state='
               "dumpsys window | grep -E -m1 'mCurrentFocus='; "
               "dumpsys media_session | grep -E -m1 'state=PlaybackState'")
 APPS_EVERY = 1800
+
+
+def read_paired(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [s for s in data if isinstance(s, dict) and s.get("serial")] if isinstance(data, list) else []
+
+
+def write_paired(path, sticks):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sticks, f, indent=2)
+    os.replace(tmp, path)
 
 
 # ---------- the key ----------
@@ -226,10 +246,10 @@ class FireTvService(PollingService):
     label = "Fire TV"
     interval = 10
 
-    def __init__(self, store, get_key, make_device=adb_device, find=find_sticks, make_signer=signer_for,
+    def __init__(self, paired_path, get_key, make_device=adb_device, find=find_sticks, make_signer=signer_for,
                  clock=time.time, **kw):
         super().__init__(clock=clock, **kw)
-        self.store = store
+        self.paired_path = paired_path
         self.get_key = get_key          # returns the PEM text, or None if no stick was ever paired
         self.make_device = make_device
         self.find = find
@@ -239,7 +259,7 @@ class FireTvService(PollingService):
         self._lock = threading.Lock()
 
     def _paired(self):
-        return [s for s in (self.store.get("settings").get("firetv") or []) if isinstance(s, dict) and s.get("serial")]
+        return read_paired(self.paired_path)
 
     def _signer_or_none(self):
         if self._signer is None:
@@ -266,7 +286,7 @@ class FireTvService(PollingService):
             st = self.sticks.get(p["serial"])
             if st is not None:
                 p["ip"] = st.saved["ip"]
-        self.store.update_settings({"firetv": paired})
+        write_paired(self.paired_path, paired)
 
     def poll(self):
         paired = self._paired()
@@ -338,7 +358,7 @@ class FireTvService(PollingService):
         if action == "launch":
             name = str(args.get("app", ""))
             package = KNOWN_APPS.get(name, name)
-            if not PACKAGE.match(package):
+            if not PACKAGE.fullmatch(package):  # fullmatch: no trailing newline or anything else
                 raise ValueError("that isn't an app name")
             cmd = f"monkey -p {package} -c android.intent.category.LAUNCHER 1"
         elif action in KEYS:
@@ -364,7 +384,7 @@ PAIR_PROPS = ("getprop ro.serialno; settings get global device_name; getprop ro.
               "getprop ro.build.version.name")
 
 
-def pair(store, get_secret, save_secret, settings, ask=input, say=print, find=find_sticks,
+def pair(paired_path, get_secret, save_secret, settings, ask=input, say=print, find=find_sticks,
          make_device=adb_device, make_signer=signer_for):
     """Find the sticks, let Anthony pick one, connect (he approves on the TV), and remember it."""
     say("Looking for Fire TVs on the home network...")
@@ -384,7 +404,11 @@ def pair(store, get_secret, save_secret, settings, ask=input, say=print, find=fi
             say("That isn't an address. Nothing saved.")
             return 1
         target = {"name": "Fire TV", "model": "", "udn": None, "ip": ip}
-    pem = load_or_make_key(get_secret, save_secret, settings)
+    try:
+        pem = load_or_make_key(get_secret, save_secret, settings)
+    except Exception as e:
+        say(f"Couldn't make or save the Fire TV key ({e}). Nothing paired.")
+        return 1
     say("Connecting. On the TV, choose 'Always allow from this computer', then OK (you have 60 seconds).")
     dev = make_device(target["ip"])
     try:
@@ -405,7 +429,7 @@ def pair(store, get_secret, save_secret, settings, ask=input, say=print, find=fi
         return 1
     entry = {"serial": serial, "name": name if name and name != "null" else target["name"],
              "model": model or target["model"], "fire_os": version, "ip": target["ip"], "udn": target["udn"]}
-    paired = [p for p in (store.get("settings").get("firetv") or []) if p.get("serial") != serial] + [entry]
-    store.update_settings({"firetv": paired})
+    paired = [p for p in read_paired(paired_path) if p.get("serial") != serial] + [entry]
+    write_paired(paired_path, paired)
     say(f"Paired: {entry['name']}. Restart the app if it's running.")
     return 0

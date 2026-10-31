@@ -26,7 +26,6 @@ DEFAULTS = {
         "pcs": [],             # [{"label", "this_machine": true} or {"label", "tailscale_name"}]; see pcstatus.py
         "sonos": [],           # [{"uid", "name", "ip"}] remembered from discovery; see sonos.py
         "sonos_max_volume": 100,  # a ceiling for the volume slider and rules; 100 = none
-        "firetv": [],          # [{"serial", "name", "ip"}] paired sticks; see firetv.py
         "vacation": False,     # VACATION is AWAY plus this flag; see modes.py
         "allow_app_arming": False,  # arming/disarming the Ring Alarm from the app: Anthony's decision
         "camera_siren_seconds": 30,  # the app stops a camera siren itself after this long

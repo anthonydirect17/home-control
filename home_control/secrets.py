@@ -53,6 +53,7 @@ STORE_FILE = "file"
 # Windows only: start a console program without flashing a window.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 APP_TARGET = SECRETS["govee-desktop-guid"]["target"]
+CRED_MAX_BLOB = 5 * 512  # Windows' CRED_MAX_CREDENTIAL_BLOB_SIZE, in bytes
 
 if sys.platform == "win32":
     import ctypes
@@ -114,6 +115,10 @@ def write_credential(target: str, secret: str, user: str = "home-control"):
     if sys.platform != "win32":
         raise RuntimeError("Credential Manager is only available on Windows")
     blob = secret.encode("utf-16-le")
+    if len(blob) > CRED_MAX_BLOB:  # long values (the Fire TV key) fit as UTF-8; _decode reads both
+        blob = secret.encode("utf-8")
+    if len(blob) > CRED_MAX_BLOB:
+        raise OSError("this secret is too long for Windows Credential Manager; use the secrets file")
     buf = ctypes.create_string_buffer(blob, len(blob))
     cred = _CREDENTIAL()
     cred.Type = _CRED_TYPE_GENERIC

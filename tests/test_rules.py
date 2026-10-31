@@ -62,8 +62,8 @@ def env(tmp_path):
     clock = Clock()
     now = {"t": datetime(2026, 10, 31, 23, 0).astimezone()}
     engine = RulesEngine(store, bus, controller, sirens=sirens, ring=ring, modes=modes, notifier=notifier,
-                         stop_url=lambda token: f"/api/rules/stop/{token}", clock=clock,
-                         now=lambda: now["t"], timer=Timer, log=lambda m: None)
+                         stop_url=lambda token: f"/api/stop/{token}", clock=clock,
+                         now=lambda: now["t"], timer=Timer, executor=lambda fn: fn(), log=lambda m: None)
     yield engine, ring, modes, bus, notifier, clock, now, controller, store
     controller.stop_all()
 
@@ -113,7 +113,7 @@ def test_red_alert_runs_until_stop_and_cleans_up(env):
     assert steps["sonos_sound"]["ok"] is None and "phase 2" in steps["sonos_sound"]["note"]
     assert steps["snapshot"]["ok"] and "2" in engine.snapshots
     title, text, stop_url = notifier.sent[0]
-    assert title == "Red Alert" and stop_url == f"/api/rules/stop/{run.stop_token}"
+    assert title == "Red Alert" and stop_url == f"/api/stop/{run.stop_token}"
     motion(bus)                       # already running: not started twice
     assert len(engine.runs) == 1
     assert engine.stop_by_token("wrong") is False
@@ -150,7 +150,7 @@ def test_safe_test_runs_only_lights_and_alert(env):
     run = engine.test(rule["id"])
     done = [s["do"] for s in run.steps if s["ok"]]
     skipped = [s["do"] for s in run.steps if s["note"] == "skipped in the safe test"]
-    assert done == ["lights", "alert"]
+    assert done == ["alert", "lights"]
     assert skipped == ["camera_siren", "sonos_sound", "snapshot"]
     assert not any("/siren" in p for p, _ in ring.calls)
     assert notifier.sent[0][0] == "Test: Red Alert"
@@ -210,7 +210,7 @@ def test_rules_never_disarm_and_arm_only_when_allowed(env):
 
 def test_push_alerts_not_set_up_is_reported_not_fatal(env, tmp_path):
     engine, ring, modes, bus, notifier, clock, now, controller, store = env
-    plain = RulesEngine(store, EventBus(), controller, timer=Timer, log=lambda m: None)
+    plain = RulesEngine(store, EventBus(), controller, timer=Timer, executor=lambda fn: fn(), log=lambda m: None)
     plain.put({"name": "Ping", "when": {"kind": "button"},
                "then": [{"do": "alert", "text": "hi"}, {"do": "lights", "target": "all", "on": True}]})
     run = plain.press(plain.rules()[0]["id"])
@@ -230,7 +230,8 @@ def test_routes(env):
                                    modes=modes, sirens=engine.sirens, rules=engine))
     assert client.get("/api/rules").status_code == 401
     client.post("/api/auth/login", json={"pin": "482916"})
-    r = client.post("/api/rules", json=dict(red_alert_template(), enabled=True))
+    assert client.post("/api/rules", json=dict(red_alert_template(), enabled=True)).status_code == 403  # sirens
+    r = client.post("/api/rules", json=dict(red_alert_template(), enabled=True, pin="482916"))
     assert r.status_code == 200
     rid = r.json()["id"]
     assert client.post("/api/rules", json={"name": "x"}).status_code == 400
@@ -243,8 +244,8 @@ def test_routes(env):
     motion(bus)
     token = engine.runs[0].stop_token
     anon = TestClient(client.app)        # the phone: no cookie
-    assert anon.post("/api/rules/stop/not-the-token").status_code == 404
-    assert anon.post(f"/api/rules/stop/{token}").json() == {"stopped": True}
+    assert anon.post("/api/stop/not-the-token").status_code == 404
+    assert anon.post(f"/api/stop/{token}").json() == {"stopped": True}
     assert anon.get("/api/rules").status_code == 401
     shot = client.get("/api/rules/snapshots/2")
     assert shot.status_code == 200 and shot.headers["cache-control"] == "no-store"
@@ -252,3 +253,93 @@ def test_routes(env):
     assert anon.get("/api/rules/snapshots/2").status_code == 401
     assert client.delete(f"/api/rules/{rid}").status_code == 200
     assert client.delete(f"/api/rules/{rid}").status_code == 404
+
+
+def test_the_open_stop_route_opens_nothing_else(env):
+    from fastapi.testclient import TestClient
+
+    from home_control.auth import PinGate, hash_pin
+    from home_control.scheduler import Scheduler
+    from home_control.server import create_app
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    rule = engine.put({"id": "stop", "name": "Button", "when": {"kind": "button"},
+                       "then": [{"do": "lights", "target": "all", "on": True}]})
+    assert rule["id"] != "stop"                      # the server makes rule ids
+    gate = PinGate(hash_pin("482916"), b"k" * 32, required=True)
+    anon = TestClient(create_app(controller, store, Scheduler(controller, store), gate, ring=ring, bus=bus,
+                                 modes=modes, rules=engine))
+    for path in ("/api/stop/press", "/api/stop/x/press", "/api/stop%2Fpress", f"/api/rules/{rule['id']}/press",
+                 "/api/rules/stop/press", "/api/stop/" + "a" * 65):
+        assert anon.post(path).status_code in (401, 404), path
+    assert not engine.runs
+    assert anon.post("/api/stop/%C3%A9").status_code in (401, 404)   # non-ASCII: no error
+    assert engine.stop_by_token("\u00e9") is False
+
+
+def test_a_broken_rule_never_stops_the_others(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    with pytest.raises(ValueError, match="cooldown_s"):
+        engine.put({"name": "Bad", "when": {"kind": "motion"}, "only_if": {"cooldown_s": "5m"},
+                    "then": [{"do": "alert"}]})
+    good = engine.put({"name": "Good", "when": {"kind": "motion"}, "then": [{"do": "alert", "text": "seen"}]})
+    store.put("rules", [{"id": "deadbeef", "name": "Hand-edited", "enabled": True}] + engine.rules())
+    motion(bus)
+    assert [r.rule["name"] for r in engine.runs] == ["Good"]
+    engine.tick()                                  # the clock check survives it too
+
+
+def test_actions_run_off_the_event_thread_and_stop_mid_start(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    queued = []
+    engine.executor = queued.append                # hold the run's actions
+    engine.put({"name": "Lights", "when": {"kind": "motion"},
+                "then": [{"do": "lights", "target": "all", "pattern": "pulse"}], "until": {"stop": True}})
+    motion(bus)                                    # returns at once; nothing has run yet
+    run = engine.runs[0]
+    assert run.steps == [] and len(queued) == 1
+    engine.stop_run(run.id)                        # STOP before the actions ran
+    queued[0]()
+    assert run.steps == [] and controller.effects_running() == 0
+
+
+def test_sensitive_button_rules_need_the_pin(env):
+    from fastapi.testclient import TestClient
+
+    from home_control.auth import PinGate, hash_pin
+    from home_control.scheduler import Scheduler
+    from home_control.server import create_app
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    gate = PinGate(hash_pin("482916"), b"k" * 32, required=True)
+    client = TestClient(create_app(controller, store, Scheduler(controller, store), gate, ring=ring, bus=bus,
+                                   modes=modes, sirens=engine.sirens, rules=engine))
+    client.post("/api/auth/login", json={"pin": "482916"})
+    rid = client.post("/api/rules", json={"name": "Scare", "when": {"kind": "button"},
+                                          "then": [{"do": "camera_siren", "cameras": "all"}],
+                                          "pin": "482916"}).json()["id"]
+    assert client.post(f"/api/rules/{rid}/press").status_code == 403
+    assert client.post(f"/api/rules/{rid}/press", json={"pin": "111111"}).status_code == 403
+    assert not any("/siren" in p for p, _ in ring.calls)
+    assert client.post(f"/api/rules/{rid}/press", json={"pin": "482916"}).json()["started"] is True
+    plain = client.post("/api/rules", json={"name": "Movie", "when": {"kind": "button"},
+                                            "then": [{"do": "lights", "target": "all", "on": False}]}).json()
+    assert client.post(f"/api/rules/{plain['id']}/press").json()["started"] is True   # no PIN needed
+
+
+def test_a_rule_puts_a_running_effect_back(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    controller.start_effect("all", "christmas", {})
+    rule = engine.put({"name": "Flash", "when": {"kind": "button"},
+                       "then": [{"do": "lights", "target": "all", "pattern": "pulse", "params": {"color": "#FF0000"}}],
+                       "until": {"stop": True}})
+    run = engine.press(rule["id"])
+    assert next(iter(controller.state.values()))["effect"]["pattern"] == "pulse"
+    engine.stop_run(run.id)
+    assert next(iter(controller.state.values()))["effect"]["pattern"] == "christmas"
+
+
+def test_bad_pattern_settings_are_reported(env):
+    engine, ring, modes, bus, notifier, clock, now, controller, store = env
+    rule = engine.put({"name": "Bad color", "when": {"kind": "button"},
+                       "then": [{"do": "lights", "target": "all", "pattern": "pulse", "params": {"color": "red"}}]})
+    run = engine.press(rule["id"])
+    assert run.steps[0]["ok"] is False and "aren't right" in run.steps[0]["note"]

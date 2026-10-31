@@ -128,6 +128,7 @@ class RingBridge:
         for line in proc.stdout:
             self._handle_line(line)
         proc.wait()
+        self._secret = None
         self.status.update(connected=False)
         return "exited"
 
@@ -157,6 +158,8 @@ class RingBridge:
             self.status.update(connected=True, error=None, cameras=msg.get("cameras", 0),
                                sensors=msg.get("sensors", 0))
             self.log(f"Ring: connected, {self.status['cameras']} cameras, {self.status['sensors']} sensors")
+            # Things that read Ring's state (the house mode) read it again after every (re)connect.
+            self.bus.publish({"source": "ring", "kind": "ready"})
         elif kind == "status":
             self.status["connected"] = bool(msg.get("connected"))
         elif kind == "event":
@@ -171,7 +174,10 @@ class RingBridge:
 
     def request(self, method, path, body=None, timeout=20):
         """Returns (content_type, bytes). Raises RingError with a page-ready message."""
-        if not self.status["connected"] or not self._secret:
+        # Gated on the helper running, not on the alarm's own connection, so a camera call (a
+        # siren off) still goes through during a short alarm-socket drop.
+        proc = self._proc
+        if not self._secret or proc is None or proc.poll() is not None:
             raise RingError(self.status.get("error") or "Ring isn't connected")
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
@@ -201,16 +207,20 @@ class CameraSirens:
     """Camera sirens that this app stops itself after a set time (30 s by default).
 
     Ring publishes no length for a camera siren started from an app, so a siren is never
-    left to run on Ring's own timer. Only cameras that have a siren take one; the base
-    station siren is not handled here (V2 plan, section 3.5).
+    left to run on Ring's own timer. Turning it off is tried a few times. Only cameras that
+    have a siren take one; the base station siren is not handled here (V2 plan, section 3.5).
     """
 
-    def __init__(self, ring, seconds=30, timer=threading.Timer, log=print):
+    def __init__(self, ring, seconds=30, timer=threading.Timer, log=print, retries=3, retry_wait=2.0,
+                 sleep=time.sleep):
         self.ring = ring
         self.seconds = seconds
         self.timer = timer
         self.log = log
-        self._timers = {}
+        self.retries = retries
+        self.retry_wait = retry_wait
+        self.sleep = sleep
+        self._timers = {}   # camera id -> (timer, token)
         self._lock = threading.Lock()
 
     def _path(self, cid):
@@ -220,30 +230,44 @@ class CameraSirens:
     def start(self, cid, seconds=None):
         seconds = max(1, min(int(seconds or self.seconds), 120))
         self.ring.post(self._path(cid), {"on": True})
+        token = object()
+        t = self.timer(seconds, self._off, args=(cid, token))
+        t.daemon = True
         with self._lock:
             old = self._timers.pop(cid, None)
             if old:
-                old.cancel()
-            t = self.timer(seconds, self._off, args=(cid,))
-            t.daemon = True
-            self._timers[cid] = t
-            t.start()
+                old[0].cancel()
+            self._timers[cid] = (t, token)
+        t.start()
         return seconds
 
-    def _off(self, cid):
+    def _off(self, cid, token=None):
         with self._lock:
+            current = self._timers.get(cid)
+            if token is not None and (current is None or current[1] is not token):
+                return  # an older timer: the siren was started again since
             self._timers.pop(cid, None)
-        try:
-            self.ring.post(self._path(cid), {"on": False})
-        except Exception as e:  # logged; Ring's own limit still ends it
-            self.log(f"Ring: couldn't stop a camera siren: {e}")
+        self._siren_off(cid)
+
+    def _siren_off(self, cid):
+        for attempt in range(self.retries):
+            try:
+                self.ring.post(self._path(cid), {"on": False})
+                return True
+            except Exception as e:
+                if attempt == self.retries - 1:
+                    self.log(f"Ring: couldn't stop a camera siren: {e}")
+                else:
+                    self.sleep(self.retry_wait)
+        return False
 
     def stop(self, cid):
         with self._lock:
-            t = self._timers.pop(cid, None)
-        if t:
-            t.cancel()
-        self.ring.post(self._path(cid), {"on": False})
+            entry = self._timers.pop(cid, None)
+        if entry:
+            entry[0].cancel()
+        if not self._siren_off(cid):
+            raise RingError("couldn't stop the camera siren")
 
     def stop_all(self):
         with self._lock:

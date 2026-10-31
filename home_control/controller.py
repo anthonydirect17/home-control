@@ -227,6 +227,10 @@ class Controller:
     def start_effect(self, target, pattern, params=None, fps=None):
         if pattern not in patterns.PATTERNS:
             raise KeyError(f"unknown pattern {pattern!r}")
+        try:  # a bad setting (a color like "red") would otherwise kill the effect on its first frame
+            patterns.render(pattern, 0.0, 3, params or {})
+        except Exception as e:
+            raise ValueError(f"the settings for {pattern} aren't right ({e})") from None
         members, mode = self.resolve(target)
         errors = {d.name: "effects need a LAN or Govee Desktop connection to this light"
                   for d in members if self.hub.effect_route(d) is None}

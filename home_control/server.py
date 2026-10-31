@@ -5,6 +5,7 @@ Everything under /api/ needs a remembered device (the page PIN), except
 """
 
 import os
+import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -26,7 +27,8 @@ from .services import ServiceError
 PAGE_SETTINGS = {"latitude", "longitude", "default_fps", "use_govee_desktop"}
 OPEN_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
 # The phone's STOP button (a push alert's action) has no cookie: its random per-run token is the key.
-OPEN_PREFIXES = ("/api/rules/stop/",)
+# Its path is shared with no other route, and only this exact shape is let through without the PIN.
+OPEN_STOP = re.compile(r"/api/stop/[A-Za-z0-9_-]{1,64}")
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -107,6 +109,10 @@ class ScheduleBody(BaseModel):
     when: dict
     target: str
     action: dict
+
+
+class PinOnlyBody(BaseModel):
+    pin: Optional[str] = None
 
 
 class ModeChangeBody(BaseModel):
@@ -208,7 +214,7 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
     @app.middleware("http")
     async def require_pin(request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and path not in OPEN_PATHS and not path.startswith(OPEN_PREFIXES):
+        if path.startswith("/api/") and path not in OPEN_PATHS and not OPEN_STOP.fullmatch(path):
             if not gate.cookie_ok(request.cookies.get(COOKIE_NAME)):
                 return JSONResponse({"detail": "PIN required", "pin_required": True}, status_code=401)
         return await call_next(request)
@@ -274,17 +280,13 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         """Changing the house mode. Arming or disarming needs the PIN every time (and Anthony's switch)."""
         if modes is None:
             raise HTTPException(503, "Ring isn't set up on this server")
-        from .modes import RING_MODE, ModeRefused
+        from .modes import ModeRefused
         target = str(body.mode).upper()
-        if modes.mode and target in RING_MODE and RING_MODE[target] != RING_MODE.get(modes.mode):
-            if not store.get("settings").get("allow_app_arming"):
-                raise HTTPException(403, "Arming and disarming from this app is switched off until Anthony "
-                                         "decides (V2 plan, section 3.5). Use the Ring app or the keypad.")
-            confirm_with_pin(gate, body.pin)
         try:
-            modes.change(target)
+            # The PIN is checked inside change(), on the same reading of the alarm as the change.
+            modes.change(target, confirm=lambda: confirm_with_pin(gate, body.pin))
         except ModeRefused as e:
-            raise HTTPException(409, str(e))
+            raise HTTPException(403 if "switched off" in str(e) else 409, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
         except RingError as e:
@@ -328,6 +330,11 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
 
     @app.post("/api/rules")
     def rules_put(body: dict):
+        """Save a rule. One that sounds sirens or arms the alarm needs the PIN, every time."""
+        from .rules import needs_pin
+        pin = body.pop("pin", None)
+        if needs_pin(body):
+            confirm_with_pin(gate, pin)
         try:
             return engine().put(body)
         except ValueError as e:
@@ -356,7 +363,15 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         return rule_run(engine().test, rid)
 
     @app.post("/api/rules/{rid}/press")
-    def rules_press(rid: str):
+    def rules_press(rid: str, body: Optional[PinOnlyBody] = None):
+        """A button rule. One that sounds sirens or arms the alarm needs the PIN, every time."""
+        from .rules import needs_pin
+        try:
+            rule = engine().rule(rid)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
+        if needs_pin(rule):
+            confirm_with_pin(gate, body.pin if body else None)
         return rule_run(engine().press, rid)
 
     @app.post("/api/rules/{rid}/stop")
@@ -378,10 +393,10 @@ def create_app(controller, store, scheduler, gate, started_at=None, ring=None, b
         return Response(content=data, media_type=ctype or "image/jpeg",
                         headers={"Cache-Control": "no-store", "X-Taken-At": iso(taken) or ""})
 
-    @app.post("/api/rules/stop/{token}")
+    @app.post("/api/stop/{token}")
     def rules_stop_token(token: str):
         """For the STOP button on a push alert. No cookie; the run's own random token, single use."""
-        if len(token) > 64 or not engine().stop_by_token(token):
+        if not OPEN_STOP.fullmatch(f"/api/stop/{token}") or not engine().stop_by_token(token):
             raise HTTPException(404, "nothing to stop")
         return {"stopped": True}
 

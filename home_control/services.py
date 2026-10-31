@@ -74,7 +74,8 @@ class PollingService:
     def next_delay(self):
         if not self._failures:
             return self.interval
-        return min(self.max_backoff, self.interval * (2 ** min(self._failures - 1, 6)))
+        # never sooner than the normal interval (a battery camera's 10 minutes stays 10 minutes)
+        return max(self.interval, min(self.max_backoff, self.interval * (2 ** min(self._failures - 1, 6))))
 
     def _run(self):
         while not self._stop.is_set():

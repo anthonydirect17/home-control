@@ -3,9 +3,8 @@
 import pytest
 
 from home_control import firetv
-from home_control.firetv import FireTvService, describe, find_sticks, pair, parse_status
+from home_control.firetv import FireTvService, describe, find_sticks, pair, parse_status, read_paired, write_paired
 from home_control.services import ServiceError
-from home_control.store import Store
 
 AWAKE = """  mWakefulness=Awake
 Display Power: state=ON
@@ -47,18 +46,17 @@ class FakeStick:
 
 @pytest.fixture
 def store(tmp_path):
-    return Store(str(tmp_path / "settings.json"))
+    return str(tmp_path / "data" / "firetv.json")   # the paired sticks' own file
 
 
-def paired_store(store, ip="10.0.0.50", udn="uuid:abc"):
-    store.update_settings({"firetv": [{"serial": "G070VM0001", "name": "Living Room", "model": "AFTKA",
-                                       "ip": ip, "udn": udn}]})
-    return store
+def paired_store(path, ip="10.0.0.50", udn="uuid:abc"):
+    write_paired(path, [{"serial": "G070VM0001", "name": "Living Room", "model": "AFTKA", "ip": ip, "udn": udn}])
+    return path
 
 
-def service(store, sticks, find=lambda: []):
+def service(path, sticks, find=lambda: []):
     by_ip = {s.ip: s for s in sticks}
-    return FireTvService(store, get_key=lambda: "PEM", make_device=lambda ip: by_ip[ip], find=find,
+    return FireTvService(path, get_key=lambda: "PEM", make_device=lambda ip: by_ip[ip], find=find,
                          make_signer=lambda pem: "signer", log=lambda m: None)
 
 
@@ -94,6 +92,8 @@ def test_actions_send_only_known_commands(store):
     assert svc.state()["sticks"][0]["power"] == "off"
     with pytest.raises(ValueError, match="isn't an app name"):
         svc.act(None, "launch", {"app": "x; reboot"})
+    with pytest.raises(ValueError, match="isn't an app name"):
+        svc.act(None, "launch", {"app": "com.a.b\n"})
     with pytest.raises(ValueError, match="unknown Fire TV action"):
         svc.act(None, "reboot")
     with pytest.raises(KeyError):
@@ -107,7 +107,7 @@ def test_a_moved_stick_is_found_again_by_its_dial_id(store):
     svc = service(paired_store(store), [gone, moved],
                   find=lambda: [{"name": "Living Room", "model": "AFTKA", "udn": "uuid:abc", "ip": "10.0.0.77"}])
     assert svc.poll_once()
-    assert store.get("settings")["firetv"][0]["ip"] == "10.0.0.77"
+    assert read_paired(store)[0]["ip"] == "10.0.0.77"
 
 
 def test_not_answering_and_not_paired(store):
@@ -119,7 +119,7 @@ def test_not_answering_and_not_paired(store):
     assert svc.state()["sticks"][0]["answering"] is False
     with pytest.raises(ServiceError, match="didn't answer"):
         svc.act(None, "home")
-    empty = service(Store(str(store.path) + ".2"), [])
+    empty = service(store + ".2", [])
     assert empty.poll_once() and "--firetv-pair" in empty.status["note"]
     assert empty.health_text() == "none paired"
 
@@ -151,8 +151,8 @@ def test_pairing_by_search(store, fake_dpapi):
                                                 "ip": "10.0.0.50"}],
                 make_device=lambda ip: stick, make_signer=lambda pem: "signer")
     assert code == 0
-    assert store.get("settings")["firetv"] == [{"serial": "G070VM0001", "name": "Living Room", "model": "AFTKA",
-                                                "fire_os": "8.1.4.3", "ip": "10.0.0.50", "udn": "uuid:abc"}]
+    assert read_paired(store) == [{"serial": "G070VM0001", "name": "Living Room", "model": "AFTKA",
+                                   "fire_os": "8.1.4.3", "ip": "10.0.0.50", "udn": "uuid:abc"}]
     assert any("Always allow" in line for line in said)
     assert not any("10.0.0.50" in line for line in said)
 
@@ -166,7 +166,7 @@ def test_pairing_by_typed_address_and_failures(store, fake_dpapi):
     code = pair(store, secrets.get_secret, secrets.save_secret_value, {}, ask=lambda q: next(answers),
                 say=said.append, find=lambda: [], make_device=lambda ip: stick, make_signer=lambda pem: "s")
     assert code == 1 and any("Vega OS" in line for line in said)
-    assert store.get("settings")["firetv"] == []
+    assert read_paired(store) == []
     answers = iter(["not-an-address"])
     assert pair(store, secrets.get_secret, secrets.save_secret_value, {}, ask=lambda q: next(answers),
                 say=said.append, find=lambda: []) == 1
@@ -180,3 +180,19 @@ def test_describe_keeps_only_amazon_devices():
     found = find_sticks(locate=lambda: list(pages), fetch=pages.__getitem__)
     assert found == [{"name": "Living Room", "model": "AFTKA", "udn": "uuid:abc", "ip": "10.0.0.50"}]
     assert describe("http://x/broken", fetch=lambda url: b"<not xml") is None
+
+
+def test_pairing_reports_a_key_it_cant_save(store):
+    said = []
+    def broken_save(name, value, settings):
+        raise OSError("this secret is too long for Windows Credential Manager")
+    code = pair(store, lambda n, s: (None, "not saved"), broken_save, {}, ask=lambda q: "10.0.0.5",
+                say=said.append, find=lambda: [])
+    assert code == 1 and any("Couldn't make or save the Fire TV key" in line for line in said)
+
+
+def test_long_secrets_fit_credential_manager_as_utf8(monkeypatch):
+    from home_control import secrets
+    pem = firetv.make_key()
+    assert len(pem.encode("utf-16-le")) > secrets.CRED_MAX_BLOB >= len(pem.encode("utf-8"))
+    assert secrets._decode(pem.encode("utf-8")) == pem.strip()
