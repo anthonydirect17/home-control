@@ -11,7 +11,13 @@
 - **The Bridge:** one front door for every app except The Desk, with six tiles: HOME, WATCHER, LAB, CRUISE, STUDIO and WORKSHOP. It comes with a shared Fusion style kit and **one health feed** that every app answers in the same shape.
 - **Order:** the plan and the device layer first (this document, and pull request 15, open for review). Screens come only after both coordinators have read this plan.
 - **Ring:** stays on the Node library `ring-client-api` that V1 already runs. The Python library has no Ring Alarm support at all (section 3.5).
-- **Built tonight** (pull request 15, unmerged, tests passing): the health feed, PC status, Sonos and Fire TV. Ring's V2 parts and Sensi are next.
+- **Built tonight** (pull request 15, unmerged, 231 Python and 6 Node tests passing):
+  - the health feed;
+  - PC status, Sonos and Fire TV;
+  - Ring's V2 parts: house modes, self-stopping camera sirens and the garage reader;
+  - the rules engine;
+  - the Light Studio's pulse, wave and strobe.
+- **Sensi waits** on two questions (section 3.6).
 - **Nothing reaches the box** without its own card, the HOMESERVER coordinator's go-ahead and Anthony's GO.
 
 ## 1. Scope and phases (as the brief sets them)
@@ -163,6 +169,14 @@
   - a small client of our own, modelled on iprak/sensi with credit;
   - one new library, `python-socketio`, pinned with its dependencies;
   - the token kept encrypted and rotated like Ring's.
+- **The protocol** (read from iprak/sensi at `96b11bd`):
+  - the refresh token is exchanged at `oauth.sensiapi.io/token`;
+  - live data arrives as "state" events over Socket.IO at `rt.sensiapi.io`, path `/thermostat`, over WebSocket;
+  - changes go out as `set_temperature`, `set_operating_mode` and `set_fan_mode`.
+- **A question first:** the token exchange uses the **client ID and secret of Sensi's own app**, which iprak/sensi publishes in its code.
+  - They are Copeland's, not Anthony's.
+  - Our repo is public, and its rule is no secrets of any kind, so I have not copied them.
+  - **The cloud coordinator decides:** either they may sit in the public repo, as they do in iprak/sensi, or Anthony types them once into a hidden prompt like his own secrets.
 - **What Anthony would do once:** sign in at Sensi's website with the browser's developer tools open, and paste the token into the app's hidden prompt. I will write the steps.
 - **Known weak points** (from iprak/sensi's open issues):
   - the connection drops and reconnects about every 31 seconds;
@@ -374,7 +388,9 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 1. **Now:**
    - this plan, to both coordinators;
    - pull request 15 (the health feed, PC status, Sonos, Fire TV), **left open** for the cloud coordinator's review (Anthony, 2026-10-31).
-2. **Next, in code, without the box:** Ring's V2 parts (house modes, camera sirens with the 30-second stop, the snapshot schedule, the garage reader), then the rules engine, then Sensi's client.
+2. **Next, in code, without the box:**
+   - **Done tonight:** Ring's V2 parts (house modes, camera sirens with the 30-second stop, the snapshot schedule, the garage reader) and the rules engine.
+   - **Sensi's client** follows the decisions in section 3.6.
 3. **After both coordinators have read this plan:** the Fusion kit and the Bridge (in the new private repo, once Anthony creates it), then HOME's screens in the Fusion look: the dashboard, the Light Studio, Alerts.
 4. **Cards, in Anthony's server order:**
    - the 0.5.2 update card (already written);
@@ -390,6 +406,7 @@ The command line ("jump to") searches the tiles' keywords. The Bridge's quick bu
 
 **Cloud coordinator:**
 - reviewing pull request 15;
+- **Sensi's app client secret:** may it sit in the public repo, or should Anthony type it into a hidden prompt (section 3.6)?
 - **approving a read-only check of The Desk's `/api/health`** by the Bridge, once a minute, for its "The Desk: healthy" light.
 
 **Anthony (open decisions; nothing is built for them until he decides):**
