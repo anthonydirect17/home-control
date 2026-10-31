@@ -12,6 +12,28 @@ This document carries the whole project to any Claude session that works on Home
 
 Personal details (device names, counts, addresses, keys) are deliberately **not** in this file because the repository is public. The owner gives you those in chat. Keys never go in chat.
 
+## V2 (from 2026-10-31): read this first
+
+- **Plan:** `docs/V2_PLAN.md`. It covers the phases, each device, the Ring library choice, the rules, the Bridge, the Fusion kit and the box's needs. Where it differs from the older sections below, the V2 plan wins.
+- **Health feed:** `docs/HEALTH_FEED.md` (schema `fusion-health/1`). Every app behind the Bridge answers `/api/health` in this shape.
+- **Design rule:** futuristic, in the Fusion look. Mockups come first; screens are built only for the direction the owner picks. V1's page stays until V2's screens replace it.
+- **The device layer**, built and tested:
+  - `services.py`, the shared shape;
+  - `pcstatus.py`, `sonos.py`, `firetv.py`;
+  - `modes.py`: house modes, which follow the Ring Alarm;
+  - `garage.py`: status from a camera's picture;
+  - `rules.py`: when, only if, then, until;
+  - `ring.py` `CameraSirens`: stopped by the app after 30 s.
+- **Waiting on the owner:**
+  - arming and disarming from the app (`allow_app_arming` stays off);
+  - the base station siren in rules (not used);
+  - the push service;
+  - Sensi (the method, and where Sensi's app client secret goes);
+  - the Fire TV models;
+  - the Workshop's file home;
+  - the Bridge's private repo.
+- **Status:** pull request 15 holds all of this, left open for the cloud coordinator's review. Nothing in it is on the server yet.
+
 ---
 
 ## 1. Goal
